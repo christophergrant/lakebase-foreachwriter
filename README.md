@@ -100,6 +100,10 @@ query = (
 )
 ```
 
+## Deploying this code
+
+At this time, go to [`src/lakebase_foreachwriter/LakebaseForeachWriter.py`](src/lakebase_foreachwriter/LakebaseForeachWriter.py) and copy the code there.
+
 ## Key Parameters
 
 -   `username` & `password`: Your database credentials. Use a service principal for production workloads. This could be a database entity, service principal, or Databricks user.
