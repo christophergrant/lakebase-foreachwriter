@@ -1,6 +1,6 @@
 # LakebaseForeachWriter
 
-A simple, dependency-lite PySpark `ForeachWriter` for writing streaming DataFrames to a Lakebase (PostgreSQL) database. It is designed to be used by **[ real-time mode](https://www.databricks.com/dataaisummit/session/real-time-mode-technical-deep-dive-how-we-built-sub-300-millisecond)**, but works in microbatch-mode as well.
+A simple PySpark `ForeachWriter` for writing streaming DataFrames to a Lakebase database. It is designed to be used by **[ real-time mode](https://www.databricks.com/dataaisummit/session/real-time-mode-technical-deep-dive-how-we-built-sub-300-millisecond)**, but works in microbatch-mode as well.
 
 This writer is designed for structured streaming jobs and provides a straightforward way to sink data into a database table. It supports insert, upsert, and high-performance bulk-insert modes.
 
