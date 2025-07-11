@@ -246,13 +246,13 @@ dependencies = [
     { name = "databricks-connect", version = "17.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "databricks-sdk" },
     { name = "psycopg" },
-    { name = "python-dotenv" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-mock" },
+    { name = "python-dotenv" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -262,13 +262,13 @@ requires-dist = [
     { name = "databricks-connect", specifier = ">=16.1.0" },
     { name = "databricks-sdk", specifier = "==0.57.0" },
     { name = "psycopg", specifier = "==3.2.9" },
-    { name = "python-dotenv", specifier = ">=1.1.1" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "pytest-mock" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "ruff", specifier = ">=0.12.2" },
     { name = "ty", specifier = ">=0.0.1a14" },
 ]

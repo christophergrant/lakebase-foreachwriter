@@ -47,6 +47,7 @@ def db_connection():
         "user": DB_USER,
         "password": DB_PASSWORD,
         "sslmode": "require",
+        "connect_timeout": 30,
     }
     conn = psycopg.connect(**conn_params, row_factory=tuple_row)
     yield conn

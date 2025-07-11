@@ -30,6 +30,7 @@ def mock_df():
 
 class TestBuildConnParams:
     def test_build_conn_params_with_lakebase_name(self, mocker):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mock_ws_client = mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         )
@@ -58,6 +59,7 @@ class TestBuildConnParams:
 
 class TestLakebaseForeachWriter:
     def test_init_insert_mode(self, mocker, mock_df):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         ).return_value.database.get_database_instance.return_value.read_write_dns = (
@@ -75,6 +77,7 @@ class TestLakebaseForeachWriter:
         assert "INSERT INTO my_table" in writer.insert_sql
 
     def test_init_upsert_mode(self, mocker, mock_df):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         ).return_value.database.get_database_instance.return_value.read_write_dns = (
@@ -93,6 +96,7 @@ class TestLakebaseForeachWriter:
         assert "ON CONFLICT (id) DO UPDATE" in writer.insert_sql
 
     def test_init_upsert_mode_no_pk_raises_error(self, mocker, mock_df):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         ).return_value.database.get_database_instance.return_value.read_write_dns = (
@@ -109,6 +113,7 @@ class TestLakebaseForeachWriter:
             )
 
     def test_init_bulk_insert_mode(self, mocker, mock_df):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         ).return_value.database.get_database_instance.return_value.read_write_dns = (
@@ -135,6 +140,7 @@ class TestLakebaseForeachWriter:
             )
 
     def test_init_unsupported_type_raises_error(self, mocker, mock_df):
+        mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         ).return_value.database.get_database_instance.return_value.read_write_dns = (
