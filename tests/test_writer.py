@@ -1,4 +1,3 @@
-
 import pytest
 from unittest.mock import MagicMock, call
 
@@ -34,9 +33,7 @@ class TestBuildConnParams:
         mock_ws_client = mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
         )
-        mock_ws_client.return_value.database.get_database_instance.return_value.read_write_dns = (
-            "test-dns"
-        )
+        mock_ws_client.return_value.database.get_database_instance.return_value.read_write_dns = "test-dns"
         params = _build_conn_params(
             user="test_user", password="test_password", lakebase_name="test_lakebase"
         )
@@ -63,7 +60,9 @@ class TestLakebaseForeachWriter:
     def test_init_insert_mode(self, mocker, mock_df):
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
-        ).return_value.database.get_database_instance.return_value.read_write_dns = "dns"
+        ).return_value.database.get_database_instance.return_value.read_write_dns = (
+            "dns"
+        )
         writer = LakebaseForeachWriter(
             username="user",
             password="password",
@@ -78,7 +77,9 @@ class TestLakebaseForeachWriter:
     def test_init_upsert_mode(self, mocker, mock_df):
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
-        ).return_value.database.get_database_instance.return_value.read_write_dns = "dns"
+        ).return_value.database.get_database_instance.return_value.read_write_dns = (
+            "dns"
+        )
         writer = LakebaseForeachWriter(
             username="user",
             password="password",
@@ -94,7 +95,9 @@ class TestLakebaseForeachWriter:
     def test_init_upsert_mode_no_pk_raises_error(self, mocker, mock_df):
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
-        ).return_value.database.get_database_instance.return_value.read_write_dns = "dns"
+        ).return_value.database.get_database_instance.return_value.read_write_dns = (
+            "dns"
+        )
         with pytest.raises(ValueError):
             LakebaseForeachWriter(
                 username="user",
@@ -108,7 +111,9 @@ class TestLakebaseForeachWriter:
     def test_init_bulk_insert_mode(self, mocker, mock_df):
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
-        ).return_value.database.get_database_instance.return_value.read_write_dns = "dns"
+        ).return_value.database.get_database_instance.return_value.read_write_dns = (
+            "dns"
+        )
         writer = LakebaseForeachWriter(
             username="user",
             password="password",
@@ -132,7 +137,9 @@ class TestLakebaseForeachWriter:
     def test_init_unsupported_type_raises_error(self, mocker, mock_df):
         mocker.patch(
             "lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient"
-        ).return_value.database.get_database_instance.return_value.read_write_dns = "dns"
+        ).return_value.database.get_database_instance.return_value.read_write_dns = (
+            "dns"
+        )
         mock_df.schema = StructType(
             [
                 StructField("id", IntegerType(), False),
@@ -149,7 +156,9 @@ class TestLakebaseForeachWriter:
             )
 
     def test_open_process_close(self, mocker, mock_df):
-        mock_psycopg = mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.psycopg")
+        mock_psycopg = mocker.patch(
+            "lakebase_foreachwriter.LakebaseForeachWriter.psycopg"
+        )
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_psycopg.connect.return_value = mock_conn
@@ -196,13 +205,18 @@ class TestLakebaseForeachWriter:
         # close
         writer.close(None)
         mock_cur.executemany.assert_has_calls(
-            [call(writer.insert_sql, [(1, "a"), (2, "b")]), call(writer.insert_sql, [(3, "c")])]
+            [
+                call(writer.insert_sql, [(1, "a"), (2, "b")]),
+                call(writer.insert_sql, [(3, "c")]),
+            ]
         )
         mock_cur.close.assert_called_once()
         mock_conn.close.assert_called_once()
 
     def test_flush_bulk_insert(self, mocker, mock_df):
-        mock_psycopg = mocker.patch("lakebase_foreachwriter.LakebaseForeachWriter.psycopg")
+        mock_psycopg = mocker.patch(
+            "lakebase_foreachwriter.LakebaseForeachWriter.psycopg"
+        )
         mock_conn = MagicMock()
         mock_cur_open = MagicMock()
         mock_cur_flush = MagicMock()
@@ -235,4 +249,3 @@ class TestLakebaseForeachWriter:
         mock_cur_flush.copy.assert_called_with("COPY my_table (id, name) FROM STDIN")
         mock_copy.write_row.assert_called_once_with((1, "a"))
         mock_cur_open.close.assert_called_once()
-

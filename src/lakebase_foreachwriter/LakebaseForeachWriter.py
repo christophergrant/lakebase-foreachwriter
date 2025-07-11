@@ -210,7 +210,11 @@ class LakebaseForeachWriter:
                 raise ValueError("primary_keys required for upsert mode")
             pk_cols = ", ".join(self.primary_keys)
             update_cols = ", ".join(
-                [f"{c} = EXCLUDED.{c}" for c in self.columns if c not in self.primary_keys]
+                [
+                    f"{c} = EXCLUDED.{c}"
+                    for c in self.columns
+                    if c not in self.primary_keys
+                ]
             )
             return f"""
                 INSERT INTO {self.table} ({cols}) VALUES ({placeholders})
@@ -246,9 +250,7 @@ class LakebaseForeachWriter:
             self._retry_flush()
 
     def _time_to_flush(self) -> bool:
-        return (
-            time.time() - self.last_flush_time
-        ) * 1000 >= self.batch_interval_ms
+        return (time.time() - self.last_flush_time) * 1000 >= self.batch_interval_ms
 
     def _retry_flush(self):
         try:
@@ -268,12 +270,12 @@ class LakebaseForeachWriter:
                 if self.insert_sql:
                     self.cur.executemany(self.insert_sql, self.row_buffer)
 
-            logging.info(
-                f"Successfully flushed {len(self.row_buffer)} rows on retry."
-            )
+            logging.info(f"Successfully flushed {len(self.row_buffer)} rows on retry.")
             self.row_buffer = []
             self.last_flush_time = time.time()
         except Exception as exc2:
-            logging.error(f"Retry failed for {len(self.row_buffer)} rows. Raising exception.")
+            logging.error(
+                f"Retry failed for {len(self.row_buffer)} rows. Raising exception."
+            )
             self.row_buffer = []  # Clear buffer to prevent reprocessing on next batch
             raise exc2

@@ -1,7 +1,7 @@
 [project]
 name = "lakebase-foreachwriter"
 version = "0.1.0"
-description = "Add your description here"
+description = "PySpark Lakebase (Postgres) Writer"
 readme = "README.md"
 authors = [
     { name = "Christopher Grant", email = "chris.grant@databricks.com" }
