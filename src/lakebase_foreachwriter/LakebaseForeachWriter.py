@@ -1,50 +1,33 @@
-# lakebase_writer.py
-
-import contextlib
 import logging
+import queue
 import threading
 import time
-from typing import List, Optional, Sequence, Any
+from collections.abc import Sequence
 
 import psycopg
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
-from pyspark.sql import Row, DataFrame
+from pyspark.sql import DataFrame, Row
 from pyspark.sql.types import ArrayType, MapType, StructType
 
 
 def _build_conn_params(
-    user: str,
-    password: str,
-    lakebase_name: Optional[str] = None,
-    read_write_dns: Optional[str] = None,
+    user: str, password: str, lakebase_name: str | None = None, host: str | None = None
 ) -> dict:
-    """
-    Constructs the connection parameters for a Lakebase database.
-
-    Args:
-        user: The username for authentication.
-        password: The password or token for authentication.
-        lakebase_name: The name of the Lakebase instance. Required if read_write_dns is not provided.
-        read_write_dns: The DNS name for the read-write endpoint of the Lakebase.
-
-    Returns:
-        A dictionary of connection parameters for psycopg.
-    """
-    if not read_write_dns:
+    """Build connection parameters for lakebase database."""
+    if not host:
         if not lakebase_name:
-            # This should be caught by the writer's __init__, but is here as a safeguard.
-            raise ValueError("Cannot look up read_write_dns without a lakebase_name.")
+            raise ValueError("Either host or lakebase_name must be provided")
         ws = WorkspaceClient(config=Config())
-        read_write_dns = ws.database.get_database_instance(lakebase_name).read_write_dns
+        host = ws.database.get_database_instance(lakebase_name).read_write_dns
 
-    if not read_write_dns:
+    if not host:
         raise ValueError(
-            "read_write_dns is required but was not provided and could not be retrieved."
+            "host is required but was not provided and could not be retrieved."
         )
 
     return {
-        "host": read_write_dns,
+        "host": host,
         "port": 5432,
         "dbname": "databricks_postgres",
         "user": user,
@@ -53,10 +36,40 @@ def _build_conn_params(
     }
 
 
-# ────────────────────────── MAIN FOREACH WRITER ──────────────────────────
 class LakebaseForeachWriter:
     """
-    A PySpark ForeachWriter for writing a streaming DataFrame to a Lakebase database.
+    Writes streaming Spark DataFrames to a Lakebase database efficiently.
+
+    This writer will work with all Lakebase use cases,
+        but was built for use with Spark's Real-time mode.
+
+    Quick Start Example:
+    ```python
+    # Create the writer
+    writer = LakebaseForeachWriter(
+        username="your_username",
+        password="your_token",
+        table="my_table",
+        df=your_dataframe,
+        lakebase_name="my_lakebase"
+    )
+
+    # Use it in your streaming query
+    query = (your_streaming_df
+             .writeStream
+             .foreach(writer)
+             .trigger(processingTime='10 seconds')
+             .start())
+    ```
+
+    Tuning to your use case:
+    - For low-latency applications, set batch_interval_ms to something small like 10ms.
+    - For high-throughput applications, set batch_size to something large like 10000, set batch_interval_ms to something large like 1000ms, and mode to "bulk-insert" if applicable.
+
+    Write modes:
+    - "insert": Appends new rows via execute_many
+    - "upsert": Updates existing rows or inserts new ones via execute_many (requires primary_keys)
+    - "bulk-insert": Uses COPY to efficiently insert large batches of data
     """
 
     def __init__(
@@ -65,147 +78,202 @@ class LakebaseForeachWriter:
         password: str,
         table: str,
         df: DataFrame,
-        lakebase_name: Optional[str] = None,
-        mode: str = "insert",  # "insert" | "upsert" | "bulk-insert"
-        primary_keys: Optional[Sequence[str]] = None,
-        read_write_dns: Optional[str] = None,
-        batch_size: int = 1_000,
+        lakebase_name: str | None = None,
+        host: str | None = None,
+        mode: str = "insert",
+        primary_keys: Sequence[str] | None = None,
+        batch_size: int = 1000,
         batch_interval_ms: int = 100,
     ):
-        """
-        Initializes the LakebaseForeachWriter on the Spark driver.
-
-        Args:
-            username: The username for the Lakebase connection.
-            password: The password (or token) for the Lakebase connection.
-            table: The name of the target table to write to.
-            df: The DataFrame being written. This is used to infer the schema.
-            lakebase_name: The name of the target Lakebase instance. Required if
-                          `read_write_dns` is not provided. Defaults to None.
-            mode: The write mode. Can be one of "insert", "upsert", or "bulk-insert".
-                  Defaults to "insert".
-            primary_keys: A sequence of column names that constitute the primary key.
-                          Required for 'upsert' mode. Defaults to None.
-            read_write_dns: The read-write DNS of the Lakebase. If not provided, it's
-                            retrieved using the Databricks SDK and `lakebase_name`. Defaults to None.
-            batch_size: The number of rows to collect in a buffer before writing to the
-                        database. Defaults to 1_000.
-            batch_interval_ms: The time in milliseconds to wait before forcing a flush
-                               of the buffer, even if it's not full. Defaults to 100.
-        """
-        if not lakebase_name and not read_write_dns:
+        # validate unsupported types
+        unsupported = self._find_unsupported_fields(df.schema)
+        if unsupported:
             raise ValueError(
-                "Either `lakebase_name` or `read_write_dns` must be provided."
+                f"Unsupported field types found: {', '.join(unsupported)}. "
+                "Please convert complex types to supported formats first."
             )
 
-        offending_fields = self._find_complex_type_offenders(df.schema)
-        if offending_fields:
-            raise ValueError(
-                f"Unsupported complex types found in schema: {', '.join(offending_fields)}"
-            )
-
-        self.lakebase_name = lakebase_name
-        self.conn_params = _build_conn_params(
-            user=username,
-            password=password,
-            lakebase_name=lakebase_name,
-            read_write_dns=read_write_dns,
-        )
+        self.username = username
+        self.password = password
         self.table = table
         self.mode = mode.lower()
         self.columns = df.schema.names
         self.primary_keys = primary_keys if primary_keys else []
-
         self.batch_size = batch_size
         self.batch_interval_ms = batch_interval_ms
-        self.insert_sql = self._build_insert_sql()
 
-    # ------------------------------------------------------------------ #
-    # custom pickling → keep writer serialisable
-    # ------------------------------------------------------------------ #
-    def __getstate__(self):
-        """
-        Prepares the writer object for serialization to be sent to executors.
+        # Initialize connection parameters
+        self.conn_params = _build_conn_params(
+            user=username,
+            password=password,
+            lakebase_name=lakebase_name,
+            host=host,
+        )
 
-        Removes non-serializable attributes like loggers, connection objects,
-        and threading primitives.
-        """
-        state = self.__dict__.copy()
-        for k in ("_stop_event", "logger", "conn", "cur"):
-            state.pop(k, None)
-        return state
+        # Initialize runtime state
+        self.conn: psycopg.Connection | None = None
+        self.cur: psycopg.Cursor | None = None
+        self.queue: queue.SimpleQueue | None = None
+        self.stop_event: threading.Event | None = None
+        self.worker_thread: threading.Thread | None = None
+        self.current_batch: list = []
+        self.last_flush = time.time()
+        self.total_rows_processed = 0
+        self.total_batches_flushed = 0
+        self.sql = self._build_sql()
 
-    def __setstate__(self, state):
-        """
-        Reinitializes the writer object on the executor after deserialization.
-
-        Sets up a logger and initializes fields for connection and buffer state.
-        """
-        self.__dict__.update(state)
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.INFO)
-        self._stop_event = None
-        self.conn = self.cur = None
-        self.row_buffer = []
-        self.last_flush_time = None
-
-    # ------------------------------------------------------------------ #
-    # ForeachWriter lifecycle
-    # ------------------------------------------------------------------ #
     def open(self, partition_id: int, epoch_id: int) -> bool:
+        """Open database connection and start background worker."""
         try:
-            self.conn = psycopg.connect(**self.conn_params, autocommit=True)
-            self.cur = self.conn.cursor()
-            self.row_buffer = []
-            self.last_flush_time = time.time()
-            # This logging is helpful for debugging stream progress.
-            logging.info(f"Opened DB connection p{partition_id} e{epoch_id}")
+            self.partition_id = partition_id
+            self.epoch_id = epoch_id
+
+            # Connect to database
+            self.conn = psycopg.connect(**self.conn_params)
+
+            # Initialize threading
+            self.queue = queue.SimpleQueue()
+            self.stop_event = threading.Event()
+            self.batch = []
+            self.last_flush = time.time()
+            self.worker_error = None
+
+            # Start background worker
+            self.worker_thread = threading.Thread(target=self._worker, daemon=True)
+            self.worker_thread.start()
+
+            logging.info(
+                f"[{partition_id}|{epoch_id}] Opening writer for table {self.table} with schema {self.columns}"
+            )
             return True
+
         except Exception as e:
-            logging.error(f"open() failed: {e}", exc_info=True)
+            logging.error(f"Failed to open writer: {e}")
             return False
 
     def process(self, row: Row):
-        self.row_buffer.append(tuple(row[c] for c in self.columns))
+        """Add row to processing queue."""
+        if self.worker_error:
+            raise Exception(f"Worker failed: {self.worker_error}")
 
-        if len(self.row_buffer) >= self.batch_size or self._time_to_flush():
-            self._flush_buffer()
+        row_data = tuple(row[col] for col in self.columns)
+        self.queue.put(row_data)
 
-    def close(self, error: Optional[Exception]):
-        if hasattr(self, "conn") and self.conn:
+    def close(self, error: Exception | None):
+        """Close writer and flush remaining data."""
+        try:
+            if self.stop_event:
+                self.stop_event.set()
+
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=5.0)
+
+            if self.queue.qsize() > self.batch_size * 5:
+                logging.warning(
+                    f"[{self.partition_id}|{self.epoch_id}] \
+                While closing the writer, remaining queue size is {self.queue.qsize()}, which is more than 5x the batch size. \
+                This may be indicative of an overwhelmed or misconfigured writer."
+                )
+
+            self._flush_remaining()
+
+        finally:
+            if self.conn:
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+
+        logging.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
+
+    def _worker(self):
+        """Background worker that processes queue and flushes batches.
+        Flush timing is based off of queue size or time threshold.
+        """
+        while not self.stop_event.is_set():
             try:
-                if self.row_buffer:
-                    self._flush_buffer()
+                # de-queue items into batch list
+                while len(self.batch) < self.batch_size:
+                    try:
+                        item = self.queue.get(timeout=0.01)  # 10ms timeout
+                        self.batch.append(item)
+                    except queue.Empty:
+                        break
+
+                should_flush = len(self.batch) >= self.batch_size or (
+                    self.batch and self._time_to_flush()
+                )
+
+                if should_flush:
+                    self._flush_batch()
+
+                time.sleep(0.0001)  # 100us sleep
+
             except Exception as e:
-                logging.error(f"Error during final flush in close(): {e}")
+                logging.error(f"Worker error: {e}")
+                self.worker_error = str(e)
+                break
 
-            if self.cur:
-                self.cur.close()
-            self.conn.close()
-
-    # ------------------------------------------------------------------ #
-    # internal helpers
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _find_complex_type_offenders(schema: StructType) -> List[str]:
-        offenders = []
-        for field in schema.fields:
-            if isinstance(field.dataType, (StructType, MapType)):
-                offenders.append(field.name)
-        return offenders
-
-    def _build_insert_sql(self) -> Optional[str]:
+    def _flush_batch(self):
+        """Flush current batch to database.
+        The last log message represents the total time to flush the batch via _flush_remaining.
         """
-        Constructs the SQL statement for 'insert' or 'upsert' operations.
-        For 'bulk-insert', the COPY command is handled directly in _flush_buffer.
-        """
+        if not self.batch:
+            return
+        perf_start = None
+        try:
+            with self.conn.cursor() as cur:
+                if self.mode == "bulk-insert":
+                    cols = ", ".join(self.columns)
+                    perf_start = time.time()
+                    with cur.copy(f"COPY {self.table} ({cols}) FROM STDIN") as copy:
+                        for row in self.batch:
+                            copy.write_row(row)
+                else:
+                    perf_start = time.time()
+                    cur.executemany(self.sql, self.batch)
+
+            self.conn.commit()
+            batch_size = len(self.batch)
+            self.batch = []
+            self.last_flush = time.time()
+
+            perf_time = (time.time() - perf_start) * 1000
+            logging.info(
+                f"[{self.partition_id}|{self.epoch_id}] Flushed {batch_size} rows in {perf_time:.1f}ms"
+            )
+
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise
+
+    def _flush_remaining(self):
+        """Flush any remaining items during shutdown."""
+        while True:
+            try:
+                self.batch.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if self.batch:
+            self._flush_batch()
+
+    def _time_to_flush(self) -> bool:
+        """Check if enough time has passed to trigger flush."""
+        return (time.time() - self.last_flush) * 1000 >= self.batch_interval_ms
+
+    def _build_sql(self) -> str | None:
+        """Build SQL statement based on mode."""
         cols = ", ".join(self.columns)
         placeholders = ", ".join(["%s"] * len(self.columns))
 
         if self.mode == "insert":
             return f"INSERT INTO {self.table} ({cols}) VALUES ({placeholders})"
 
-        if self.mode == "upsert":
+        elif self.mode == "upsert":
             if not self.primary_keys:
                 raise ValueError("primary_keys required for upsert mode")
             pk_cols = ", ".join(self.primary_keys)
@@ -221,61 +289,24 @@ class LakebaseForeachWriter:
                 ON CONFLICT ({pk_cols}) DO UPDATE SET {update_cols}
             """
 
-        if self.mode == "bulk-insert":
-            return None  # COPY handled in _flush_buffer
+        elif self.mode == "bulk-insert":
+            return None  # bulk-insert is straightforward and done entirely in _flush_batch()
 
-        raise ValueError('mode must be "insert", "upsert", or "bulk-insert"')
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
 
-    def _flush_buffer(self):
-        if not self.row_buffer:
-            return
+    @staticmethod
+    def _find_unsupported_fields(schema: StructType) -> list[str]:
+        """Find fields with unsupported data types."""
+        unsupported = []
+        unsupported_types = (StructType, MapType)
 
-        try:
-            if self.mode == "bulk-insert":
-                with self.conn.cursor() as cur:
-                    cols = ", ".join(self.columns)
-                    copy_sql = f"COPY {self.table} ({cols}) FROM STDIN"
-                    with cur.copy(copy_sql) as copy:
-                        for row in self.row_buffer:
-                            copy.write_row(row)
-            else:
-                if self.insert_sql:
-                    self.cur.executemany(self.insert_sql, self.row_buffer)
+        for field in schema.fields:
+            if isinstance(field.dataType, unsupported_types):
+                unsupported.append(field.name)
+            elif isinstance(field.dataType, ArrayType) and isinstance(
+                field.dataType.elementType, unsupported_types
+            ):
+                unsupported.append(field.name)
 
-            logging.info(f"Flushed {len(self.row_buffer)} rows ({self.mode})")
-            self.row_buffer = []
-            self.last_flush_time = time.time()
-        except Exception as exc:
-            logging.error(f"Flush failed: {exc}; reconnecting & retrying")
-            self._retry_flush()
-
-    def _time_to_flush(self) -> bool:
-        return (time.time() - self.last_flush_time) * 1000 >= self.batch_interval_ms
-
-    def _retry_flush(self):
-        try:
-            self.conn.close()
-            self.conn = psycopg.connect(**self.conn_params, autocommit=True)
-            self.cur = self.conn.cursor()
-            logging.info("Reconnected to the database...")
-
-            if self.mode == "bulk-insert":
-                with self.conn.cursor() as cur:
-                    cols = ", ".join(self.columns)
-                    copy_sql = f"COPY {self.table} ({cols}) FROM STDIN"
-                    with cur.copy(copy_sql) as copy:
-                        for row in self.row_buffer:
-                            copy.write_row(row)
-            else:
-                if self.insert_sql:
-                    self.cur.executemany(self.insert_sql, self.row_buffer)
-
-            logging.info(f"Successfully flushed {len(self.row_buffer)} rows on retry.")
-            self.row_buffer = []
-            self.last_flush_time = time.time()
-        except Exception as exc2:
-            logging.error(
-                f"Retry failed for {len(self.row_buffer)} rows. Raising exception."
-            )
-            self.row_buffer = []  # Clear buffer to prevent reprocessing on next batch
-            raise exc2
+        return unsupported

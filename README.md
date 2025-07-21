@@ -31,12 +31,14 @@ This is the default mode. It performs a standard SQL `INSERT` for each row. It's
 from lakebase_foreachwriter import LakebaseForeachWriter
 
 writer = LakebaseForeachWriter(
-    username=LAKEBASE_USER,
-    password=LAKEBASE_PASSWORD,
-    read_write_dns="your-lakebase.dns.databricks.com",  # Directly provide the DNS
-    table="my_target_table",
-    df=streaming_df,
-    mode="insert"  # This is the default, but explicitly shown here
+    username="your-username",
+    password="your-password",
+    table="your_target_table",
+    df=your_dataframe,
+    host="your-lakebase.dns.databricks.com",  # Directly provide the DNS
+    mode="insert",  # Optional: defaults to "insert"
+    batch_size=1000,  # Optional: defaults to 1000
+    batch_interval_ms=100,  # Optional: defaults to 100
 )
 
 query = (
@@ -57,13 +59,15 @@ This mode performs an `INSERT ... ON CONFLICT DO UPDATE`. It's useful for sinkin
 from lakebase_foreachwriter import LakebaseForeachWriter
 
 writer = LakebaseForeachWriter(
-    username=LAKEBASE_USER,
-    password=LAKEBASE_PASSWORD,
-    lakebase_name=LAKEBASE_NAME,  # Use the lakebase name for dynamic lookup
-    table="my_target_table",
-    df=streaming_df,
+    username="your-username",
+    password="your-password",
+    table="your_target_table",
+    df=your_dataframe,
+    host="your-lakebase.dns.databricks.com",  # Directly provide the DNS
     mode="upsert",
-    primary_keys=["id"]  # Must be provided for upsert
+    primary_keys=["id"],  # Required for upsert mode
+    batch_size=1000,
+    batch_interval_ms=100,
 )
 
 query = (
@@ -84,11 +88,11 @@ This mode does not require any special parameters. This example connects by prov
 from lakebase_foreachwriter import LakebaseForeachWriter
 
 writer = LakebaseForeachWriter(
-    username=LAKEBASE_USER,
-    password=LAKEBASE_PASSWORD,
-    read_write_dns="your-lakebase.dns.databricks.com",  # Directly provide the DNS
-    table="my_target_table",
-    df=streaming_df,
+    username="your-username",
+    password="your-password",
+    table="your_target_table",
+    df=your_dataframe,
+    host="your-lakebase.dns.databricks.com",  # Directly provide the DNS
     mode="bulk-insert"
 )
 
@@ -107,8 +111,8 @@ At this time, go to [`src/lakebase_foreachwriter/LakebaseForeachWriter.py`](src/
 ## Key Parameters
 
 -   `username` & `password`: Your database credentials. Use a service principal for production workloads. This could be a database entity, service principal, or Databricks user.
--   `lakebase_name`: The name of your Lakebase instance in Databricks. The writer will use this to automatically find the correct database endpoint. **You must provide either `lakebase_name` or `read_write_dns`.**
--   `read_write_dns`: If you want to bypass the automatic lookup, you can provide the full DNS for the read-write endpoint directly. **You must provide either `lakebase_name` or `read_write_dns`.**
+-   `lakebase_name`: The name of your Lakebase instance in Databricks. The writer will use this to automatically find the correct database endpoint. **You must provide either `lakebase_name` or `host`.**
+-   `host`: If you want to bypass the automatic lookup, you can provide the full DNS for the read-write endpoint directly. **You must provide either `lakebase_name` or `host`.**
 -   `table`: The name of the database table you are writing to, optionally including the schema in form schema.table.
 -   `df`: The DataFrame being written. Its schema is used to configure the writer. Note that complex types such as `struct` and `map` are not supported and will throw an error.
 -   `mode`: The write strategy.
@@ -130,3 +134,35 @@ CREATE ROLE "serviceprincipal"
 ;
 ```
 - The alternative to having Structured Streaming write to Postgres is to use foreachBatch and Spark's batch JDBC writer within it. This works well but will have higher latency than real-time mode with this foreach writer approach. Also, this writer supports upserts and bulk inserts via copy.
+
+## Running Tests
+
+The project includes both unit tests and integration tests. The integration tests require a connection to a Databricks Lakebase instance.
+
+### Environment Setup
+
+Create a `.env` file in the project root with the following variables:
+
+```bash
+# Database connection details for integration tests
+LAKEBASE_WRITER_HOST=your-lakebase.dns.databricks.com
+LAKEBASE_WRITER_USER=your-username
+LAKEBASE_WRITER_PASSWORD=your-password
+LAKEBASE_WRITER_LAKEBASE_NAME=your-lakebase-name
+```
+
+### Running the Tests
+
+1. Unit tests (no database required):
+   ```bash
+   pytest tests/test_writer.py -v
+   ```
+
+2. Integration tests (requires database connection):
+   ```bash
+   pytest tests/test_integration.py -v
+   ```
+
+If the database credentials are not provided in the `.env` file, the integration tests will be skipped.
+
+Note: Never commit your `.env` file to version control. The file is already in `.gitignore` to prevent accidental commits.
