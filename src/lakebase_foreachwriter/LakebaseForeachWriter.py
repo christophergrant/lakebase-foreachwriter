@@ -155,10 +155,10 @@ class LakebaseForeachWriter:
         if self.worker_error:
             raise Exception(f"Worker failed: {self.worker_error}")
         
-        if not isinstance(row, Row):
-            raise TypeError(f"Expected Row object, got {type(row)}")
-        
-        row_data = tuple(row[col] for col in self.columns)
+        if isinstance(row, Row):
+            row_data = tuple(row[col] for col in self.columns)
+        else:
+            row_data = tuple(row)
         self.queue.put(row_data)
 
     def close(self, error: Exception | None):
