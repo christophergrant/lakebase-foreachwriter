@@ -151,11 +151,13 @@ class LakebaseForeachWriter:
             logging.error(f"Failed to open writer: {e}")
             return False
 
-    def process(self, row: Row):
-        """Add row to processing queue."""
+    def process(self, row: Row | tuple):
         if self.worker_error:
             raise Exception(f"Worker failed: {self.worker_error}")
-
+        
+        if not isinstance(row, Row):
+            raise TypeError(f"Expected Row object, got {type(row)}")
+        
         row_data = tuple(row[col] for col in self.columns)
         self.queue.put(row_data)
 

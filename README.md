@@ -121,7 +121,7 @@ At this time, go to [`src/lakebase_foreachwriter/LakebaseForeachWriter.py`](src/
     -   `"bulk-insert"`: Uses a high-performance `COPY` operation, ideal for large volumes of data.
 -   `primary_keys`: A list of column names that form the primary key for the table. This is **required** for `"upsert"` mode.
 -   `batch_size`: The number of rows to buffer before writing to the database.
--   `batch_interval_ms`: The maximum time to wait before flushing the buffer, even if it's not full. 
+-   `batch_interval_ms`: The maximum time to wait before flushing the buffer, even if it's not full.
 
 
 ## Other comments
