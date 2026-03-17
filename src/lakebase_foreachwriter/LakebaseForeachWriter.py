@@ -154,7 +154,7 @@ class LakebaseForeachWriter:
     def process(self, row: Row | tuple):
         if self.worker_error:
             raise Exception(f"Worker failed: {self.worker_error}")
-        
+
         if isinstance(row, Row):
             row_data = tuple(row[col] for col in self.columns)
         else:
@@ -162,13 +162,29 @@ class LakebaseForeachWriter:
         self.queue.put(row_data)
 
     def close(self, error: Exception | None):
-        """Close writer and flush remaining data."""
+        """Close writer and flush remaining data.
+
+        AR-000113790: Previously used a 5s join timeout with no guard on
+        the thread's liveness afterward. Under heavy load, 5s was often
+        insufficient, and the caller would proceed to touch shared state
+        (self.batch) while the worker was still running.
+
+        Changes:
+          - Join timeout increased to 30s to accommodate large in-flight batches.
+          - Added is_alive() guard after join; if the worker is still running,
+            log an error so the issue is visible rather than silently corrupting
+            shared state.
+        """
         try:
             if self.stop_event:
                 self.stop_event.set()
 
             if self.worker_thread and self.worker_thread.is_alive():
-                self.worker_thread.join(timeout=5.0)
+                self.worker_thread.join(timeout=30.0)
+                if self.worker_thread.is_alive():
+                    logging.error(
+                        f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
+                    )
 
             if self.queue.qsize() > self.batch_size * 5:
                 logging.warning(
@@ -190,14 +206,28 @@ class LakebaseForeachWriter:
 
     def _worker(self):
         """Background worker that processes queue and flushes batches.
-        Flush timing is based off of queue size or time threshold.
+
+        AR-000113790: The inner dequeue loop previously ran without checking
+        _time_to_flush(). Under sustained load (queue never empty for longer
+        than the get timeout), the loop would continuously dequeue items
+        without ever breaking out to evaluate the time-based flush condition.
+        This meant batch_interval_ms was effectively dead code — flushes only
+        occurred at batch_size boundaries or at close().
+
+        Changes:
+          - Added _time_to_flush() check at the top of the inner loop so the
+            worker breaks out to flush even when the queue still has items.
+          - Reduced queue.get timeout from 10ms to 1ms to lower the latency
+            floor when the queue is briefly empty between bursts.
         """
         while not self.stop_event.is_set():
             try:
                 # de-queue items into batch list
                 while len(self.batch) < self.batch_size:
+                    if self.batch and self._time_to_flush():
+                        break
                     try:
-                        item = self.queue.get(timeout=0.01)  # 10ms timeout
+                        item = self.queue.get(timeout=0.001)  # 1ms timeout
                         self.batch.append(item)
                     except queue.Empty:
                         break

@@ -1,0 +1,65 @@
+bundle:
+  name: lakebase-latency-repro
+
+workspace:
+  profile: DEFAULT
+
+resources:
+  jobs:
+    rtm_buggy:
+      name: "AR-000113790 RTM Latency — BUGGY writer"
+      tasks:
+        - task_key: "stream_buggy"
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "m5.large"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+            aws_attributes:
+              ebs_volume_count: 1
+              ebs_volume_size: 32
+              ebs_volume_type: "GENERAL_PURPOSE_SSD"
+            autotermination_minutes: 10
+            custom_tags:
+              engagement: "AR-000113790"
+              ResourceClass: "SingleNode"
+          notebook_task:
+            notebook_path: "./notebooks/rtm_latency_test.py"
+            base_parameters:
+              variant: "BUGGY"
+              duration_minutes: "4"
+              rows_per_second: "200"
+          libraries:
+            - pypi:
+                package: "psycopg[binary]==3.2.9"
+
+    rtm_fixed:
+      name: "AR-000113790 RTM Latency — FIXED writer"
+      tasks:
+        - task_key: "stream_fixed"
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "m5.large"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+            aws_attributes:
+              ebs_volume_count: 1
+              ebs_volume_size: 32
+              ebs_volume_type: "GENERAL_PURPOSE_SSD"
+            autotermination_minutes: 10
+            custom_tags:
+              engagement: "AR-000113790"
+              ResourceClass: "SingleNode"
+          notebook_task:
+            notebook_path: "./notebooks/rtm_latency_test.py"
+            base_parameters:
+              variant: "FIXED"
+              duration_minutes: "4"
+              rows_per_second: "200"
+          libraries:
+            - pypi:
+                package: "psycopg[binary]==3.2.9"
