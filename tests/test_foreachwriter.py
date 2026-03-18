@@ -402,6 +402,59 @@ class TestLakebaseForeachWriter:
         assert writer.batch_interval_ms == 50
         assert writer.columns == ["id", "name"]
 
+    @patch("psycopg.connect")
+    def test_sustained_load_triggers_time_flush(self, mock_connect, mock_dataframe):
+        """Under sustained load (queue never empty), _worker() must flush
+        based on batch_interval_ms, not only at batch_size or close().
+        """
+        writer = LakebaseForeachWriter(
+            username="test_user",
+            password="test_pass",
+            table="test_table",
+            df=mock_dataframe,
+            host="localhost",
+            batch_size=50000,  # Very large — never reached
+            batch_interval_ms=50,  # 50ms flush interval
+        )
+
+        # Set up mocked connection
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+        mock_cursor.__exit__ = Mock(return_value=None)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
+
+        writer.open(0, 0)
+
+        # Feed rows continuously for ~500ms at ~200 rows/sec
+        # batch_size (50000) will never be reached, so flushes
+        # should only happen via time-based trigger
+        start = time.time()
+        row_count = 0
+        while time.time() - start < 0.5:
+            writer.process(Row(id=row_count, name=f"val_{row_count}"))
+            row_count += 1
+            time.sleep(0.005)  # ~200 rows/sec
+
+        # Give the worker a moment to flush any pending batch
+        time.sleep(0.15)
+
+        # Stop the worker
+        writer.stop_event.set()
+        writer.worker_thread.join(timeout=5)
+
+        # Count how many times executemany was called (= flushes by worker)
+        flush_count = mock_cursor.executemany.call_count
+
+        # With 500ms of writes and 50ms batch_interval_ms, we expect
+        # at least 3 time-based flushes from the worker thread
+        assert flush_count >= 3, (
+            f"Expected at least 3 time-based flushes during sustained load, "
+            f"but got {flush_count}. The batch_interval_ms flush is not "
+            f"triggering inside the dequeue loop."
+        )
+
     # Additional test to verify lakebase_name success case by mocking at class level
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
     def test_with_lakebase_name_integration(self, mock_ws_client, mock_dataframe):
