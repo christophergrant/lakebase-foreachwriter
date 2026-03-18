@@ -9,7 +9,7 @@ resources:
     rtm_buggy:
       name: "AR-000113790 RTM Latency — BUGGY writer"
       tasks:
-        - task_key: "stream_buggy"
+        - task_key: "populate_kafka"
           new_cluster:
             spark_version: "16.4.x-scala2.12"
             node_type_id: "m5.large"
@@ -17,6 +17,32 @@ resources:
             spark_conf:
               "spark.databricks.cluster.profile": "singleNode"
               "spark.master": "local[*]"
+            aws_attributes:
+              ebs_volume_count: 1
+              ebs_volume_size: 32
+              ebs_volume_type: "GENERAL_PURPOSE_SSD"
+            autotermination_minutes: 10
+            custom_tags:
+              engagement: "AR-000113790"
+              ResourceClass: "SingleNode"
+          notebook_task:
+            notebook_path: "./notebooks/populate_kafka.py"
+            base_parameters:
+              variant: "BUGGY"
+              duration_minutes: "5"
+              rows_per_second: "2000"
+
+        - task_key: "stream_buggy"
+          depends_on:
+            - task_key: "populate_kafka"
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "m5.large"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+              "spark.databricks.streaming.realTimeMode.enabled": "true"
             aws_attributes:
               ebs_volume_count: 1
               ebs_volume_size: 32
@@ -30,7 +56,7 @@ resources:
             base_parameters:
               variant: "BUGGY"
               duration_minutes: "4"
-              rows_per_second: "200"
+              rows_per_second: "2000"
           libraries:
             - pypi:
                 package: "psycopg[binary]==3.2.9"
@@ -38,7 +64,7 @@ resources:
     rtm_fixed:
       name: "AR-000113790 RTM Latency — FIXED writer"
       tasks:
-        - task_key: "stream_fixed"
+        - task_key: "populate_kafka"
           new_cluster:
             spark_version: "16.4.x-scala2.12"
             node_type_id: "m5.large"
@@ -55,11 +81,37 @@ resources:
               engagement: "AR-000113790"
               ResourceClass: "SingleNode"
           notebook_task:
+            notebook_path: "./notebooks/populate_kafka.py"
+            base_parameters:
+              variant: "FIXED"
+              duration_minutes: "5"
+              rows_per_second: "2000"
+
+        - task_key: "stream_fixed"
+          depends_on:
+            - task_key: "populate_kafka"
+          new_cluster:
+            spark_version: "16.4.x-scala2.12"
+            node_type_id: "m5.large"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+              "spark.databricks.streaming.realTimeMode.enabled": "true"
+            aws_attributes:
+              ebs_volume_count: 1
+              ebs_volume_size: 32
+              ebs_volume_type: "GENERAL_PURPOSE_SSD"
+            autotermination_minutes: 10
+            custom_tags:
+              engagement: "AR-000113790"
+              ResourceClass: "SingleNode"
+          notebook_task:
             notebook_path: "./notebooks/rtm_latency_test.py"
             base_parameters:
               variant: "FIXED"
               duration_minutes: "4"
-              rows_per_second: "200"
+              rows_per_second: "2000"
           libraries:
             - pypi:
                 package: "psycopg[binary]==3.2.9"

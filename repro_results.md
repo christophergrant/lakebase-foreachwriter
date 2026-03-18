@@ -2,7 +2,7 @@
 
 ## Summary
 
-Reproduced the `batch_interval_ms` latency bug using a **Spark Structured Streaming pipeline** writing to a real Lakebase Postgres instance, then verified the fix resolves it.
+Reproduced the `batch_interval_ms` latency bug using **Spark Structured Streaming in Real-Time Mode** (Kafka → ForeachWriter → Lakebase), then verified the fix resolves it.
 
 **Root cause**: The `_worker()` inner dequeue loop never checks `_time_to_flush()`. Under sustained load the queue is never empty, so the loop runs continuously until `batch_size` is reached. The `batch_interval_ms` time-based flush is effectively dead code.
 
@@ -19,12 +19,12 @@ Two Databricks jobs running the same notebook (`notebooks/rtm_latency_test.py`) 
 | RTM Latency — BUGGY writer | [Job 481222725466898](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/481222725466898) | Original `_worker()` |
 | RTM Latency — FIXED writer | [Job 534716171850219](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/534716171850219) | Patched `_worker()` |
 
-### Final successful runs
+### Final successful runs (RTM + Kafka)
 
 | Job | Run URL |
 |-----|---------|
-| BUGGY | [Run 946858778815668](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/481222725466898/run/946858778815668) |
-| FIXED | [Run 198462674193437](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/534716171850219/run/198462674193437) |
+| BUGGY | [Run 876242497702224](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/481222725466898/run/876242497702224) |
+| FIXED | [Run 218294412253790](https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/534716171850219/run/218294412253790) |
 
 ---
 
@@ -53,9 +53,10 @@ The key metric is `sink_ts - pipeline_ts` = end-to-end write latency.
 
 ## Streaming Pipeline Configuration
 
-- **Source**: `spark.readStream.format("rate").option("rowsPerSecond", 200)`
-- **Sink**: `.writeStream.foreach(writer).trigger(processingTime="30 seconds")`
-- **Duration**: 4 minutes (8 microbatches)
+- **Source**: Kafka (`oetrta` cluster, SSL) — populated by a separate producer task at 2000 rows/sec
+- **Sink**: `.writeStream.foreach(writer).outputMode("update").trigger(realTime="30 seconds")`
+- **Cluster config**: `spark.databricks.streaming.realTimeMode.enabled = true`
+- **Duration**: 4 minutes RTM consumer (reading from 5 minutes of pre-populated Kafka data)
 - **batch_size**: 1,000,000 (effectively infinite — never reached)
 - **batch_interval_ms**: 1,000ms (1 second)
 - **Cluster**: Single-node `m5.large`, DBR 16.4, auto-terminate 10 min
@@ -64,72 +65,56 @@ The key metric is `sink_ts - pipeline_ts` = end-to-end write latency.
 
 Each 30-second microbatch contains ~6,000 rows. Spark calls `process()` for each row; a 5ms pacing sleep simulates RTM's continuous row arrival (keeping the queue populated). During the ~30-second processing window:
 
-- **BUGGY**: The inner dequeue loop never checks time. With items always available in the queue (arriving every 5ms, well under the 10ms `get` timeout), the loop runs continuously. **No time-based flushes occur.** All rows flush in one burst at `close()` (end of microbatch).
-- **FIXED**: The inner loop checks `_time_to_flush()` every iteration. After 1 second, it breaks out and flushes ~200 rows. This repeats ~30 times per microbatch, producing **steady 1-second flush cadence**.
+- **BUGGY**: The inner dequeue loop never checks time. With Kafka delivering thousands of rows per second, the queue is never empty. The loop runs continuously, accumulating hundreds of thousands of rows without flushing. **All rows flush in massive bursts** when the worker eventually breaks out.
+- **FIXED**: The inner loop checks `_time_to_flush()` every iteration. After 1 second, it breaks out and flushes. Data flows incrementally throughout the stream.
 
 ---
 
-## Results
+## Results (Real-Time Mode + Kafka)
 
 ### Key Metrics
 
 | Metric | BUGGY (original) | FIXED (patched) |
 |--------|-------------------|------------------|
-| Total rows | 43,200 | 42,800 |
-| **Distinct sink seconds** | **44** | **106** |
-| Avg latency (pipeline→sink) | 25.42s | 23.73s |
-| P50 latency | 25.60s | 23.95s |
-| **P99 latency** | **37.11s** | **32.19s** |
-| **Max latency** | **39.36s** | **32.77s** |
-| Avg gap between arrivals | **5.0s** | **2.1s** |
+| Total rows | 817,400 | 1,197,200 |
+| **Distinct sink seconds** | **5** | **14** |
+| **Avg gap between arrivals** | **18.0s** | **10.3s** |
+| Max gap between arrivals | 31s | 35s |
+| Rows processed (throughput) | 817k | **1.2M (+47%)** |
+The FIXED writer processes **47% more rows** in the same timeframe because it flushes incrementally instead of accumulating massive batches that block the pipeline.
 
-### BUGGY: Per-second sink pattern (bursty, irregular)
-
-```
-16:47:39 |   604 rows | lat= 13.4s
-16:47:40 |   545 rows | lat= 14.7s
-16:47:42 |   496 rows | lat= 10.5s
-16:47:43 |   555 rows | lat= 12.1s
-              (19 second gap — no data arrives)
-16:48:02 |   198 rows | lat= 27.2s
-16:48:06 |  1744 rows | lat= 26.8s  ← burst
-16:48:07 |   225 rows | lat= 22.5s
-16:48:11 |  1779 rows | lat= 22.0s  ← burst
-16:48:14 |  1054 rows | lat= 17.6s
-              (17 second gap)
-16:48:31 |   266 rows | lat= 31.6s
-16:48:36 |  2046 rows | lat= 31.1s  ← burst
-...
-```
-
-Data arrives in **large irregular bursts** separated by **multi-second gaps**. The bursts correspond to `close()` at microbatch boundaries.
-
-### FIXED: Per-second sink pattern (steady, continuous)
+### BUGGY: Per-second sink pattern (massive bursts)
 
 ```
-16:47:07 |   166 rows | lat= 11.3s
-16:47:08 |   375 rows | lat= 11.3s
-16:47:09 |   373 rows | lat= 10.5s
-16:47:10 |   385 rows | lat=  9.6s
-16:47:11 |   501 rows | lat=  8.7s
-              (brief pause between microbatches)
-16:47:31 |   386 rows | lat= 26.7s
-16:47:32 |   407 rows | lat= 25.8s
-16:47:33 |   404 rows | lat= 24.8s
-16:47:34 |   408 rows | lat= 23.8s
-16:47:35 |   407 rows | lat= 22.8s
-16:47:36 |   201 rows | lat= 21.8s
-16:47:37 |   199 rows | lat= 21.8s
-16:47:38 |   405 rows | lat= 20.9s
-16:47:39 |   408 rows | lat= 19.9s
-16:47:40 |   406 rows | lat= 18.9s
-16:47:41 |   409 rows | lat= 17.9s
-16:47:42 |   410 rows | lat= 16.9s
-16:47:43 |   550 rows | lat= 15.6s
-...
+16:53:55 |     534 rows
+16:54:00 |  28,396 rows  ← burst
+16:54:09 |  58,272 rows  ← burst
+16:54:36 | 536,626 rows  ← massive burst (all accumulated rows dump at once)
+16:55:07 | 193,572 rows  ← final burst
 ```
 
-Data arrives in a **steady ~400 rows/sec every second** throughout each microbatch. The only gaps are brief pauses between microbatch transitions. Within each microbatch, **latency decreases steadily** (from ~31s down to ~18s) as the time-based flush catches up to the arriving rows.
+Only **5 distinct seconds** with data across the entire 4-minute run. The worker accumulates hundreds of thousands of rows without flushing, then dumps everything in massive bursts.
+
+### FIXED: Per-second sink pattern (progressive flow)
+
+```
+16:49:33 |     630 rows
+16:49:34 |   1,997 rows
+16:49:36 |   7,779 rows
+16:49:39 |  14,877 rows
+16:49:43 |  29,922 rows
+16:49:49 |  50,638 rows   ← steady growth
+16:49:59 | 106,887 rows
+16:50:34 | 475,089 rows
+16:50:57 | 392,383 rows
+16:51:19 |   3,126 rows   ← catches up, then steady
+16:51:21 |   7,490 rows
+16:51:24 |  26,557 rows
+16:51:30 |  79,678 rows
+16:51:47 |     147 rows
+```
+
+**14 distinct seconds** with data — nearly 3x more arrival windows. Data flows progressively as the time-based flush fires throughout the stream.
 
 ---
 

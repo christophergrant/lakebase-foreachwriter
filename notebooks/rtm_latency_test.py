@@ -2,9 +2,13 @@
 # MAGIC %md
 # MAGIC # RTM Latency Test — LakebaseForeachWriter (AR-000113790)
 # MAGIC
-# MAGIC Runs a Spark Structured Streaming pipeline using `foreach(writer)` to sink rows
-# MAGIC from a rate source into Lakebase. Parameterized by `variant` (BUGGY or FIXED)
-# MAGIC to compare the original and patched `_worker()` implementations.
+# MAGIC Runs a Spark Structured Streaming pipeline in **Real-Time Mode** using
+# MAGIC `foreach(writer)` to sink rows from a rate source into Lakebase.
+# MAGIC Parameterized by `variant` (BUGGY or FIXED) to compare the original
+# MAGIC and patched `_worker()` implementations.
+# MAGIC
+# MAGIC **Trigger**: `.trigger(realTime="30 seconds")` — rows flow continuously
+# MAGIC through `process()` as they arrive; no microbatch buffering.
 # MAGIC
 # MAGIC **Table**: `rtm_latency_test` in Lakebase
 # MAGIC - `pipeline_ts` — when Spark generated the row (rate source timestamp)
@@ -101,15 +105,16 @@ with psycopg.connect(**conn_params) as conn:
     conn.commit()
 logger.info(f"Cleared previous {VARIANT} data from rtm_latency_test")
 
-# Clear stale checkpoint
-import shutil
-
-ckpt_path = f"/tmp/rtm_latency_ckpt/{VARIANT.lower()}"
-try:
-    dbutils.fs.rm(ckpt_path, recurse=True)
-    logger.info(f"Cleared checkpoint: {ckpt_path}")
-except Exception:
-    pass
+# Clear stale checkpoints (consumer and producer)
+for ckpt_path in [
+    f"/tmp/rtm_latency_ckpt/{VARIANT.lower()}",
+    f"/tmp/rtm_kafka_producer_ckpt/{VARIANT.lower()}",
+]:
+    try:
+        dbutils.fs.rm(ckpt_path, recurse=True)
+        logger.info(f"Cleared checkpoint: {ckpt_path}")
+    except Exception:
+        pass
 
 # COMMAND ----------
 
@@ -186,13 +191,6 @@ class _BaseForeachWriter:
         else:
             row_data = tuple(row)
         self.queue.put(row_data)
-        # Pace row delivery to simulate RTM's continuous arrival.
-        # In microbatch mode, Spark delivers all rows instantly. Without
-        # pacing, the queue drains before batch_interval_ms elapses,
-        # so the bug doesn't manifest. At 5ms/row, processing 6000 rows
-        # (30s batch at 200/sec) takes ~30 seconds — matching the trigger
-        # interval so data flows continuously rather than in end-of-batch bursts.
-        time.sleep(0.005)
 
     def close(self, error):
         """Called by Spark at the end of each partition/epoch."""
@@ -315,24 +313,41 @@ class FixedForeachWriter(_BaseForeachWriter):
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Build Streaming Pipeline
+# MAGIC ## Build RTM Streaming Consumer
+# MAGIC
+# MAGIC Reads from Kafka topic populated by the `populate_kafka` task.
+# MAGIC Uses Real-Time Mode trigger so rows flow continuously through `process()`.
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import from_json, col as _col
+from pyspark.sql.types import StructType, StructField, LongType, TimestampType, StringType
 
-# Rate source: generates (timestamp, value) at ROWS_PER_SECOND
+KAFKA_BOOTSTRAP = dbutils.secrets.get("oetrta", "kafka-bootstrap-servers-tls")
+KAFKA_TOPIC = f"ar113790-rtm-latency-{VARIANT.lower()}"
+
+# Schema of the JSON payload written to Kafka by the populate_kafka task
+kafka_value_schema = StructType([
+    StructField("id", LongType()),
+    StructField("pipeline_ts", TimestampType()),
+    StructField("variant", StringType()),
+])
+
+# Read from Kafka and parse the JSON value
 raw_stream = (
-    spark.readStream.format("rate").option("rowsPerSecond", ROWS_PER_SECOND).load()
+    spark.readStream
+    .format("kafka")
+    .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+    .option("kafka.security.protocol", "SSL")
+    .option("subscribe", KAFKA_TOPIC)
+    .option("startingOffsets", "earliest")
+    .load()
 )
 
-# Reshape to match our Lakebase table columns:
-#   id (BIGINT), pipeline_ts (TIMESTAMP), variant (TEXT)
-# sink_ts is DEFAULT CURRENT_TIMESTAMP in Lakebase — not in the DataFrame.
-stream_df = raw_stream.select(
-    col("value").alias("id"),
-    col("timestamp").alias("pipeline_ts"),
-    lit(VARIANT).alias("variant"),
+stream_df = (
+    raw_stream
+    .select(from_json(_col("value").cast("string"), kafka_value_schema).alias("data"))
+    .select("data.id", "data.pipeline_ts", "data.variant")
 )
 
 print(f"Stream schema: {stream_df.schema.simpleString()}")
@@ -371,16 +386,18 @@ print(
     f"batch_interval_ms={writer.batch_interval_ms}"
 )
 
-# Use processingTime trigger with a long interval (5 minutes).
-# Each microbatch collects 5 minutes of rate-source rows, then calls
-# process() for each one. The process() sleep (0.5ms/row) simulates
-# RTM's continuous row arrival, keeping the queue populated so:
-#   BUGGY: worker never time-flushes (queue always has items → inner loop
-#          never breaks → all rows flush at close/end of microbatch)
-#   FIXED: worker flushes every 500ms throughout the microbatch
+# Real-Time Mode: rows flow continuously through process() as they arrive
+# from the source (no microbatch buffering). The checkpoint interval controls
+# how often progress is committed, not when data is processed.
+#
+# With RTM, the ForeachWriter's open() is called once per partition, process()
+# is called continuously, and close() only at query stop. This means:
+#   BUGGY: rows accumulate indefinitely — no time-based flush ever fires
+#   FIXED: rows flush every batch_interval_ms throughout the stream
 query = (
     stream_df.writeStream.foreach(writer)
-    .trigger(processingTime="30 seconds")
+    .outputMode("update")
+    .trigger(realTime="30 seconds")
     .option("checkpointLocation", f"/tmp/rtm_latency_ckpt/{VARIANT.lower()}")
     .start()
 )
@@ -414,7 +431,7 @@ while time.time() - start < run_seconds:
         print(f"  [{elapsed:.0f}s] Active, {num_rows} rows in last batch")
     time.sleep(10)
 
-# Stop the query
+# Stop the RTM consumer query
 query.stop()
 print(f"Query stopped after {time.time() - start:.0f}s")
 
