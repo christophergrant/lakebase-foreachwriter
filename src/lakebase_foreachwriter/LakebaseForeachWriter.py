@@ -162,19 +162,7 @@ class LakebaseForeachWriter:
         self.queue.put(row_data)
 
     def close(self, error: Exception | None):
-        """Close writer and flush remaining data.
-
-        AR-000113790: Previously used a 5s join timeout with no guard on
-        the thread's liveness afterward. Under heavy load, 5s was often
-        insufficient, and the caller would proceed to touch shared state
-        (self.batch) while the worker was still running.
-
-        Changes:
-          - Join timeout increased to 30s to accommodate large in-flight batches.
-          - Added is_alive() guard after join; if the worker is still running,
-            log an error so the issue is visible rather than silently corrupting
-            shared state.
-        """
+        """Close writer and flush remaining data."""
         try:
             if self.stop_event:
                 self.stop_event.set()
@@ -205,21 +193,7 @@ class LakebaseForeachWriter:
         logging.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
 
     def _worker(self):
-        """Background worker that processes queue and flushes batches.
-
-        AR-000113790: The inner dequeue loop previously ran without checking
-        _time_to_flush(). Under sustained load (queue never empty for longer
-        than the get timeout), the loop would continuously dequeue items
-        without ever breaking out to evaluate the time-based flush condition.
-        This meant batch_interval_ms was effectively dead code — flushes only
-        occurred at batch_size boundaries or at close().
-
-        Changes:
-          - Added _time_to_flush() check at the top of the inner loop so the
-            worker breaks out to flush even when the queue still has items.
-          - Reduced queue.get timeout from 10ms to 1ms to lower the latency
-            floor when the queue is briefly empty between bursts.
-        """
+        """Background worker that processes queue and flushes batches."""
         while not self.stop_event.is_set():
             try:
                 # de-queue items into batch list

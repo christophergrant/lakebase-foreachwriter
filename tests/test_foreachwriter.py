@@ -404,10 +404,8 @@ class TestLakebaseForeachWriter:
 
     @patch("psycopg.connect")
     def test_sustained_load_triggers_time_flush(self, mock_connect, mock_dataframe):
-        """
-        Regression test for AR-000113790: Under sustained load (queue never
-        empty), _worker() must flush based on batch_interval_ms, not only
-        at batch_size or close().
+        """Under sustained load (queue never empty), _worker() must flush
+        based on batch_interval_ms, not only at batch_size or close().
         """
         writer = LakebaseForeachWriter(
             username="test_user",
