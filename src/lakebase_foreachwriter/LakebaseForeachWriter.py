@@ -6,7 +6,6 @@ from collections.abc import Sequence
 
 import psycopg
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.core import Config
 from pyspark.sql import DataFrame, Row
 from pyspark.sql.types import ArrayType, MapType, StructType
 
@@ -18,7 +17,7 @@ def _build_conn_params(
     if not host:
         if not lakebase_name:
             raise ValueError("Either host or lakebase_name must be provided")
-        ws = WorkspaceClient(config=Config())
+        ws = WorkspaceClient()
         host = ws.database.get_database_instance(lakebase_name).read_write_dns
 
     if not host:
