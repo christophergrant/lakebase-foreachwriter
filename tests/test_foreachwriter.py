@@ -335,6 +335,41 @@ class TestLakebaseForeachWriter:
         assert "remaining queue size is 10000" in caplog.text
         assert "more than 5x the batch size" in caplog.text
 
+    def test_close_raises_on_worker_shutdown_timeout(self, writer):
+        writer.queue = queue.SimpleQueue()
+        writer.stop_event = threading.Event()
+        writer.worker_thread = Mock()
+        writer.worker_thread.is_alive.side_effect = [True, True]
+        writer.worker_error = None
+        writer.conn = Mock()
+        writer.partition_id = 1
+        writer.epoch_id = 100
+
+        with patch.object(writer, "_flush_remaining") as mock_flush:
+            with pytest.raises(TimeoutError, match="did not stop within 30s"):
+                writer.close(None)
+
+        writer.worker_thread.join.assert_called_once_with(timeout=30.0)
+        mock_flush.assert_not_called()
+        writer.conn.close.assert_not_called()
+
+    def test_close_reraises_worker_error_without_flushing(self, writer):
+        writer.queue = queue.SimpleQueue()
+        writer.stop_event = threading.Event()
+        writer.worker_thread = Mock()
+        writer.worker_thread.is_alive.return_value = False
+        writer.worker_error = "database error"
+        writer.conn = Mock()
+        writer.partition_id = 1
+        writer.epoch_id = 100
+
+        with patch.object(writer, "_flush_remaining") as mock_flush:
+            with pytest.raises(RuntimeError, match="Worker failed: database error"):
+                writer.close(None)
+
+        mock_flush.assert_not_called()
+        writer.conn.close.assert_called_once()
+
     def test_worker_thread_batch_processing(self, writer):
         writer.queue = queue.SimpleQueue()
         writer.stop_event = threading.Event()

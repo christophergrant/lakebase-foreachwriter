@@ -163,34 +163,49 @@ class LakebaseForeachWriter:
 
     def close(self, error: Exception | None):
         """Close writer and flush remaining data."""
+        partition_id = getattr(self, "partition_id", "?")
+        epoch_id = getattr(self, "epoch_id", "?")
+        worker_timed_out = False
+
         try:
             if self.stop_event:
                 self.stop_event.set()
 
             if self.worker_thread and self.worker_thread.is_alive():
                 self.worker_thread.join(timeout=30.0)
-                if self.worker_thread.is_alive():
-                    logging.error(
-                        f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
+                worker_timed_out = self.worker_thread.is_alive()
+                if worker_timed_out:
+                    message = (
+                        f"[{partition_id}|{epoch_id}] Worker thread did not stop within 30s"
                     )
+                    logging.error(message)
+                    raise TimeoutError(message)
 
-            if self.queue.qsize() > self.batch_size * 5:
+            worker_error = getattr(self, "worker_error", None)
+            if worker_error:
+                raise RuntimeError(
+                    f"[{partition_id}|{epoch_id}] Worker failed: {worker_error}"
+                )
+
+            remaining_queue_size = self.queue.qsize() if self.queue else 0
+            if remaining_queue_size > self.batch_size * 5:
                 logging.warning(
-                    f"[{self.partition_id}|{self.epoch_id}] \
-                While closing the writer, remaining queue size is {self.queue.qsize()}, which is more than 5x the batch size. \
+                    f"[{partition_id}|{epoch_id}] \
+                While closing the writer, remaining queue size is {remaining_queue_size}, which is more than 5x the batch size. \
                 This may be indicative of an overwhelmed or misconfigured writer."
                 )
 
-            self._flush_remaining()
+            if self.queue:
+                self._flush_remaining()
 
         finally:
-            if self.conn:
+            if self.conn and not worker_timed_out:
                 try:
                     self.conn.close()
                 except Exception:
                     pass
 
-        logging.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
+        logging.info(f"[{partition_id}|{epoch_id}] Writer closed")
 
     def _worker(self):
         """Background worker that processes queue and flushes batches."""
