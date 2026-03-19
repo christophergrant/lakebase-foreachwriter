@@ -26,9 +26,10 @@ To contribute to this project or run it in a local development environment, foll
     The integration tests require a live database connection. Create a `.env` file in the root of the project and add your credentials:
     ```bash
     # .env
-    LAKEBASE_USER="your-service-principal-id"
-    LAKEBASE_PASSWORD="your-service-principal-secret"
-    LAKEBASE_NAME="your-lakebase-instance-name"
+    LAKEBASE_WRITER_HOST="your-lakebase.dns.databricks.com"
+    LAKEBASE_WRITER_USER="your-service-principal-id"
+    LAKEBASE_WRITER_PASSWORD="your-service-principal-secret"
+    LAKEBASE_WRITER_LAKEBASE_NAME="your-lakebase-instance-name"
     ```
     The tests will automatically load these variables.
 
@@ -42,7 +43,7 @@ To contribute to this project or run it in a local development environment, foll
     uv run ty check src tests
 
     # Run unit tests
-    uv run pytest tests/test_writer.py
+    uv run pytest tests/test_foreachwriter.py
 
     # Run integration tests (requires .env file)
     uv run pytest tests/test_integration.py

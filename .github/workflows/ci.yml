@@ -32,13 +32,14 @@ jobs:
         run: uv run ty check src tests
 
       - name: Run unit tests
-        run: uv run pytest tests/test_writer.py
+        run: uv run pytest tests/test_foreachwriter.py
 
       - name: Run integration tests
         # This step only runs if the required secrets are available.
-        if: ${{ env.LAKEBASE_USER != '' && env.LAKEBASE_PASSWORD != '' && env.LAKEBASE_NAME != '' }}
+        if: ${{ env.LAKEBASE_WRITER_HOST != '' && env.LAKEBASE_WRITER_USER != '' && env.LAKEBASE_WRITER_PASSWORD != '' && env.LAKEBASE_WRITER_LAKEBASE_NAME != '' }}
         env:
-          LAKEBASE_USER: ${{ secrets.LAKEBASE_USER }}
-          LAKEBASE_PASSWORD: ${{ secrets.LAKEBASE_PASSWORD }}
-          LAKEBASE_NAME: ${{ secrets.LAKEBASE_NAME }}
-        run: uv run pytest tests/test_integration.py 
+          LAKEBASE_WRITER_HOST: ${{ secrets.LAKEBASE_WRITER_HOST }}
+          LAKEBASE_WRITER_USER: ${{ secrets.LAKEBASE_WRITER_USER }}
+          LAKEBASE_WRITER_PASSWORD: ${{ secrets.LAKEBASE_WRITER_PASSWORD }}
+          LAKEBASE_WRITER_LAKEBASE_NAME: ${{ secrets.LAKEBASE_WRITER_LAKEBASE_NAME }}
+        run: uv run pytest tests/test_integration.py
