@@ -175,9 +175,7 @@ class LakebaseForeachWriter:
                 self.worker_thread.join(timeout=30.0)
                 worker_timed_out = self.worker_thread.is_alive()
                 if worker_timed_out:
-                    message = (
-                        f"[{partition_id}|{epoch_id}] Worker thread did not stop within 30s"
-                    )
+                    message = f"[{partition_id}|{epoch_id}] Worker thread did not stop within 30s"
                     logging.error(message)
                     raise TimeoutError(message)
 
