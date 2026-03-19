@@ -21,7 +21,7 @@ A complete example of how to use `LakebaseForeachWriter` can be found in the exa
 
 ## Examples
 
-The following examples assume you have a `streaming_df` DataFrame ready to be written and that the required connection parameters (`LAKEBASE_USER`, `LAKEBASE_PASSWORD`, and either `LAKEBASE_NAME` or a DNS name) have been defined as variables in your notebook scope.
+The following examples assume you have a `streaming_df` DataFrame ready to be written and that the required connection parameters (`LAKEBASE_WRITER_USER`, `LAKEBASE_WRITER_PASSWORD`, and either `LAKEBASE_WRITER_LAKEBASE_NAME` or `LAKEBASE_WRITER_HOST`) have been defined as variables in your notebook scope.
 
 ### Example 1: `insert` mode
 
@@ -155,7 +155,7 @@ LAKEBASE_WRITER_LAKEBASE_NAME=your-lakebase-name
 
 1. Unit tests (no database required):
    ```bash
-   pytest tests/test_writer.py -v
+   pytest tests/test_foreachwriter.py -v
    ```
 
 2. Integration tests (requires database connection):
