@@ -84,6 +84,9 @@ class LakebaseForeachWriter:
         primary_keys: Sequence[str] | None = None,
         batch_size: int = 1000,
         batch_interval_ms: int = 100,
+        max_queue_size: int = 10_000,
+        max_retries: int = 3,
+        retry_base_delay_s: float = 0.5,
     ):
         # validate unsupported types
         unsupported = self._find_unsupported_fields(df.schema)
@@ -101,6 +104,9 @@ class LakebaseForeachWriter:
         self.primary_keys = primary_keys if primary_keys else []
         self.batch_size = batch_size
         self.batch_interval_ms = batch_interval_ms
+        self.max_queue_size = max_queue_size
+        self.max_retries = max_retries
+        self.retry_base_delay_s = retry_base_delay_s
 
         # Initialize connection parameters
         self.conn_params = _build_conn_params(
@@ -113,7 +119,7 @@ class LakebaseForeachWriter:
         # Initialize runtime state
         self.conn: psycopg.Connection | None = None
         self.cur: psycopg.Cursor | None = None
-        self.queue: queue.SimpleQueue | None = None
+        self.queue: queue.Queue | None = None
         self.stop_event: threading.Event | None = None
         self.worker_thread: threading.Thread | None = None
         self.current_batch: list = []
@@ -132,7 +138,7 @@ class LakebaseForeachWriter:
             self.conn = psycopg.connect(**self.conn_params)
 
             # Initialize threading
-            self.queue = queue.SimpleQueue()
+            self.queue = queue.Queue(maxsize=self.max_queue_size)
             self.stop_event = threading.Event()
             self.batch = []
             self.last_flush = time.time()
@@ -152,14 +158,19 @@ class LakebaseForeachWriter:
             return False
 
     def process(self, row: Row | tuple):
-        if self.worker_error:
-            raise Exception(f"Worker failed: {self.worker_error}")
-        
         if isinstance(row, Row):
             row_data = tuple(row[col] for col in self.columns)
         else:
             row_data = tuple(row)
-        self.queue.put(row_data)
+
+        while True:
+            if self.worker_error:
+                raise Exception(f"Worker failed: {self.worker_error}")
+            try:
+                self.queue.put(row_data, timeout=1.0)
+                return
+            except queue.Full:
+                continue
 
     def close(self, error: Exception | None):
         """Close writer and flush remaining data."""
@@ -207,7 +218,7 @@ class LakebaseForeachWriter:
                 )
 
                 if should_flush:
-                    self._flush_batch()
+                    self._flush_with_retry()
 
                 time.sleep(0.0001)  # 100us sleep
 
@@ -252,6 +263,53 @@ class LakebaseForeachWriter:
                 pass
             raise
 
+    def _reconnect(self):
+        """Close existing connection and re-establish it."""
+        try:
+            if self.conn:
+                self.conn.close()
+        except Exception:
+            pass
+        try:
+            self.conn = psycopg.connect(**self.conn_params)
+            logging.info(
+                f"[{self.partition_id}|{self.epoch_id}] Reconnected to database"
+            )
+        except Exception as e:
+            logging.error(
+                f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}"
+            )
+            raise
+
+    def _flush_with_retry(self):
+        """Flush batch with exponential backoff retry on failure."""
+        last_exception = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                self._flush_batch()
+                return
+            except Exception as e:
+                last_exception = e
+                if attempt == self.max_retries:
+                    raise
+                delay = self.retry_base_delay_s * (2**attempt)
+                logging.warning(
+                    f"[{self.partition_id}|{self.epoch_id}] Flush attempt {attempt + 1} failed: {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                # Interruptible sleep in 100ms increments
+                elapsed = 0.0
+                while elapsed < delay:
+                    if self.stop_event and self.stop_event.is_set():
+                        break
+                    time.sleep(min(0.1, delay - elapsed))
+                    elapsed += 0.1
+                try:
+                    self._reconnect()
+                except Exception:
+                    pass  # Next flush attempt will catch it
+        raise last_exception
+
     def _flush_remaining(self):
         """Flush any remaining items during shutdown."""
         while True:
@@ -261,7 +319,7 @@ class LakebaseForeachWriter:
                 break
 
         if self.batch:
-            self._flush_batch()
+            self._flush_with_retry()
 
     def _time_to_flush(self) -> bool:
         """Check if enough time has passed to trigger flush."""
