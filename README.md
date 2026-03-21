@@ -155,7 +155,7 @@ LAKEBASE_WRITER_LAKEBASE_NAME=your-lakebase-name
 
 1. Unit tests (no database required):
    ```bash
-   pytest tests/test_writer.py -v
+   pytest tests/test_foreachwriter.py -v
    ```
 
 2. Integration tests (requires database connection):
@@ -163,6 +163,42 @@ LAKEBASE_WRITER_LAKEBASE_NAME=your-lakebase-name
    pytest tests/test_integration.py -v
    ```
 
-If the database credentials are not provided in the `.env` file, the integration tests will be skipped.
+### Performance Testing
+
+The repository includes a CI-friendly performance harness for direct and
+Spark-backed benchmark profiles.
+
+Run a single benchmark profile and emit machine-readable JSON:
+
+```bash
+uv run python tests/perf_runner.py \
+  --profile ci_smoke_direct \
+  --mode insert \
+  --strict \
+  --output-json perf-insert.json
+```
+
+Compare two directories of JSON benchmark results:
+
+```bash
+uv run python tests/compare_perf_results.py \
+  --base-dir perf-results/main \
+  --head-dir perf-results/head
+```
+
+Available profiles live in `tests/performance_profiles.json`:
+
+- `ci_smoke_direct`: fast branch-vs-branch smoke benchmark
+- `nightly_direct`: longer direct-mode baseline
+- `nightly_spark`: Spark-backed end-to-end benchmark
+
+For deterministic CI, the benchmark harness does not load `.env` by default.
+To opt in to local `.env` loading for ad hoc runs:
+
+```bash
+LAKEBASE_WRITER_LOAD_DOTENV=1 uv run python tests/perf_runner.py --profile ci_smoke_direct --mode insert
+```
+
+If the database credentials are not provided in the environment, the integration tests will be skipped.
 
 Note: Never commit your `.env` file to version control. The file is already in `.gitignore` to prevent accidental commits.

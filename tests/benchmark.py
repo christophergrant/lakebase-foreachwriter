@@ -21,6 +21,7 @@ import os
 import random
 import statistics
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -30,8 +31,14 @@ import psycopg
 from databricks.connect import DatabricksSession
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
+
+def _load_benchmark_env() -> None:
+    """Load a local .env file only when explicitly requested."""
+    if os.getenv("LAKEBASE_WRITER_LOAD_DOTENV") == "1":
+        load_dotenv(override=False)
+
+
+_load_benchmark_env()
 
 DB_HOST = os.getenv("LAKEBASE_WRITER_HOST")
 DB_USER = os.getenv("LAKEBASE_WRITER_USER")
@@ -333,7 +340,8 @@ class DatabaseManager:
     def create_test_table(self, table_name: str) -> str:
         """Creates a test table and returns its name."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        full_table_name = f"{table_name}_{timestamp}"
+        safe_table_name = table_name.replace("-", "_")
+        full_table_name = f"{safe_table_name}_{timestamp}_{uuid.uuid4().hex[:8]}"
 
         try:
             with psycopg.connect(**self.conn_params) as conn:
@@ -415,11 +423,20 @@ class MockDataFrame:
         self.schema = MockSchema()
 
 
+class MockField:
+    """Minimal schema field compatible with writer validation."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.dataType = object()
+
+
 class MockSchema:
     """Mock schema for testing without Spark."""
 
     def __init__(self):
         self.names = ["ts", "value", "weight"]
+        self.fields = [MockField(name) for name in self.names]
 
 
 class DirectLakebaseWriter:
@@ -756,12 +773,11 @@ class LakebaseBenchmark:
         start_time = time.time()
 
         try:
-            # Handle both DirectLakebaseWriter and LakebaseForeachWriter
-            if hasattr(writer, "writer") and writer.writer is not None:
-                # DirectLakebaseWriter case
+            # DirectLakebaseWriter exposes process_row/open()/close() instead of the
+            # ForeachWriter open(partition_id, epoch_id) contract.
+            if hasattr(writer, "process_row"):
                 open_result = writer.open()
             else:
-                # LakebaseForeachWriter case
                 open_result = (
                     writer.open(partition_id=0, epoch_id=0)
                     if hasattr(writer, "open")
