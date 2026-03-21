@@ -158,6 +158,10 @@ class LakebaseForeachWriter:
             return False
 
     def process(self, row: Row | tuple):
+      
+        if self.worker_error:
+            raise Exception(f"Worker failed: {self.worker_error}")
+
         if isinstance(row, Row):
             row_data = tuple(row[col] for col in self.columns)
         else:
@@ -179,7 +183,11 @@ class LakebaseForeachWriter:
                 self.stop_event.set()
 
             if self.worker_thread and self.worker_thread.is_alive():
-                self.worker_thread.join(timeout=5.0)
+                self.worker_thread.join(timeout=30.0)
+                if self.worker_thread.is_alive():
+                    logging.error(
+                        f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
+                    )
 
             if self.queue.qsize() > self.batch_size * 5:
                 logging.warning(
@@ -200,15 +208,15 @@ class LakebaseForeachWriter:
         logging.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
 
     def _worker(self):
-        """Background worker that processes queue and flushes batches.
-        Flush timing is based off of queue size or time threshold.
-        """
+        """Background worker that processes queue and flushes batches."""
         while not self.stop_event.is_set():
             try:
                 # de-queue items into batch list
                 while len(self.batch) < self.batch_size:
+                    if self.batch and self._time_to_flush():
+                        break
                     try:
-                        item = self.queue.get(timeout=0.01)  # 10ms timeout
+                        item = self.queue.get(timeout=0.001)  # 1ms timeout
                         self.batch.append(item)
                     except queue.Empty:
                         break
