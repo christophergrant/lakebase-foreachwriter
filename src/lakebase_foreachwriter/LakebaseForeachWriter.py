@@ -158,7 +158,6 @@ class LakebaseForeachWriter:
             return False
 
     def process(self, row: Row | tuple):
-      
         if self.worker_error:
             raise Exception(f"Worker failed: {self.worker_error}")
 
@@ -291,7 +290,7 @@ class LakebaseForeachWriter:
 
     def _flush_with_retry(self):
         """Flush batch with exponential backoff retry on failure."""
-        last_exception = None
+        last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 self._flush_batch()
@@ -316,6 +315,8 @@ class LakebaseForeachWriter:
                     self._reconnect()
                 except Exception:
                     pass  # Next flush attempt will catch it
+        if last_exception is None:
+            raise RuntimeError("flush retry exited without an exception")
         raise last_exception
 
     def _flush_remaining(self):

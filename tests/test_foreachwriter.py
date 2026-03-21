@@ -32,8 +32,9 @@ class TestBuildConnParams:
         }
         assert result == expected
 
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_with_lakebase_name(self, mock_ws_client):
+    def test_with_lakebase_name(self, mock_ws_client, mock_config):
         # Create a mock database instance with a read_write_dns property
         mock_db = Mock()
         mock_db.read_write_dns = "test-host"
@@ -46,6 +47,7 @@ class TestBuildConnParams:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         result = _build_conn_params("user", "pass", lakebase_name="test-db")
 
@@ -64,8 +66,9 @@ class TestBuildConnParams:
         ):
             _build_conn_params("user", "pass")
 
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_host_retrieval_fails(self, mock_ws_client):
+    def test_host_retrieval_fails(self, mock_ws_client, mock_config):
         # Create a mock database client that raises NotFound
         mock_db_client = Mock()
         mock_db_client.get_database_instance.side_effect = NotFound(
@@ -76,6 +79,7 @@ class TestBuildConnParams:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         with pytest.raises(NotFound, match="Resource not found"):
             _build_conn_params("user", "pass", lakebase_name="test-db")
@@ -441,6 +445,8 @@ class TestLakebaseForeachWriter:
         time.sleep(0.15)
 
         # Stop the worker
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
         writer.stop_event.set()
         writer.worker_thread.join(timeout=5)
 
@@ -456,8 +462,11 @@ class TestLakebaseForeachWriter:
         )
 
     # Additional test to verify lakebase_name success case by mocking at class level
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_with_lakebase_name_integration(self, mock_ws_client, mock_dataframe):
+    def test_with_lakebase_name_integration(
+        self, mock_ws_client, mock_config, mock_dataframe
+    ):
         """Test successful initialization with lakebase_name using WorkspaceClient mock"""
         # Create a mock database instance with a read_write_dns property
         mock_db = Mock()
@@ -471,6 +480,7 @@ class TestLakebaseForeachWriter:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         writer = LakebaseForeachWriter(
             username="user",
@@ -589,12 +599,11 @@ class TestLakebaseForeachWriter:
         writer.max_retries = 3
         writer.retry_base_delay_s = 0.01  # Fast for tests
 
-        call_count = 0
+        call_count = {"value": 0}
 
         def mock_flush():
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 2:
+            call_count["value"] += 1
+            if call_count["value"] <= 2:
                 raise Exception("transient error")
             writer.batch = []
 
@@ -602,7 +611,7 @@ class TestLakebaseForeachWriter:
             with patch.object(writer, "_reconnect") as mock_reconnect:
                 writer._flush_with_retry()
 
-        assert call_count == 3
+        assert call_count["value"] == 3
         assert mock_reconnect.call_count == 2
 
     def test_flush_with_retry_exhausts_retries(self, writer):
@@ -649,6 +658,8 @@ class TestLakebaseForeachWriter:
 
         time.sleep(1.0)  # Let worker process
 
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
         writer.stop_event.set()
         writer.worker_thread.join(timeout=5)
 
@@ -682,6 +693,8 @@ class TestLakebaseForeachWriter:
 
         time.sleep(1.0)
 
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
         writer.stop_event.set()
         writer.worker_thread.join(timeout=5)
 
