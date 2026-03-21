@@ -189,6 +189,7 @@ uv run python tests/compare_perf_results.py \
 Available profiles live in `tests/performance_profiles.json`:
 
 - `ci_smoke_direct`: fast branch-vs-branch smoke benchmark
+- `ci_smoke_hermetic`: hermetic fake-database PR benchmark
 - `nightly_direct`: longer direct-mode baseline
 - `nightly_spark`: Spark-backed end-to-end benchmark
 
@@ -197,6 +198,16 @@ To opt in to local `.env` loading for ad hoc runs:
 
 ```bash
 LAKEBASE_WRITER_LOAD_DOTENV=1 uv run python tests/perf_runner.py --profile ci_smoke_direct --mode insert
+```
+
+To run the hermetic fake-database path locally:
+
+```bash
+LAKEBASE_WRITER_USE_FAKE_PSYCOPG=1 \
+LAKEBASE_WRITER_HOST=fake-host \
+LAKEBASE_WRITER_USER=fake-user \
+LAKEBASE_WRITER_PASSWORD=fake-password \
+uv run python tests/perf_runner.py --profile ci_smoke_hermetic --mode insert
 ```
 
 If the database credentials are not provided in the environment, the integration tests will be skipped.

@@ -41,6 +41,48 @@
       }
     }
   },
+  "ci_smoke_hermetic": {
+    "description": "Hermetic fake-database smoke test for PR CI with higher target rates than the live benchmark.",
+    "defaults": {
+      "use_spark": false,
+      "duration_seconds": 3
+    },
+    "modes": {
+      "insert": {
+        "rows_per_second": 1500,
+        "batch_size": 200,
+        "batch_interval_ms": 20,
+        "thresholds": {
+          "min_success_rate": 99.0,
+          "min_throughput_rps": 800.0,
+          "max_p95_latency_ms": 500.0,
+          "max_error_count": 0
+        }
+      },
+      "upsert": {
+        "rows_per_second": 1200,
+        "batch_size": 150,
+        "batch_interval_ms": 25,
+        "thresholds": {
+          "min_success_rate": 99.0,
+          "min_throughput_rps": 600.0,
+          "max_p95_latency_ms": 600.0,
+          "max_error_count": 0
+        }
+      },
+      "bulk-insert": {
+        "rows_per_second": 5000,
+        "batch_size": 1000,
+        "batch_interval_ms": 75,
+        "thresholds": {
+          "min_success_rate": 99.0,
+          "min_throughput_rps": 2500.0,
+          "max_p95_latency_ms": 750.0,
+          "max_error_count": 0
+        }
+      }
+    }
+  },
   "nightly_direct": {
     "description": "Longer direct-mode baseline run for scheduled trend tracking.",
     "defaults": {

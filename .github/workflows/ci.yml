@@ -32,7 +32,7 @@ jobs:
         run: uv run ty check src tests
 
       - name: Run unit tests
-        run: uv run pytest tests/test_writer.py
+        run: uv run pytest tests/test_foreachwriter.py tests/test_reliability.py tests/test_perf_hermetic.py
 
       - name: Run integration tests
         # This step only runs if the required secrets are available.

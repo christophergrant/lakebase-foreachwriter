@@ -14,20 +14,22 @@ Usage:
 """
 
 import argparse
+import importlib.util
 import itertools
 import json
 import logging
 import os
 import random
 import statistics
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import psycopg
 from databricks.connect import DatabricksSession
 from dotenv import load_dotenv
 
@@ -40,6 +42,29 @@ def _load_benchmark_env() -> None:
 
 _load_benchmark_env()
 
+
+def _load_psycopg():
+    """Load either the real psycopg module or the hermetic fake backend."""
+    if os.getenv("LAKEBASE_WRITER_USE_FAKE_PSYCOPG") != "1":
+        import psycopg as real_psycopg
+
+        return real_psycopg
+
+    fake_module_path = Path(__file__).with_name("fakes") / "fake_psycopg.py"
+    spec = importlib.util.spec_from_file_location(
+        "lakebase_writer_fake_psycopg", fake_module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load fake psycopg backend from {fake_module_path}")
+
+    fake_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = fake_module
+    spec.loader.exec_module(fake_module)
+    return fake_module.psycopg
+
+
+psycopg = _load_psycopg()
+
 DB_HOST = os.getenv("LAKEBASE_WRITER_HOST")
 DB_USER = os.getenv("LAKEBASE_WRITER_USER")
 DB_PASSWORD = os.getenv("LAKEBASE_WRITER_PASSWORD")
@@ -51,6 +76,14 @@ try:
         LakebaseForeachWriter,
         _build_conn_params,
     )
+
+    if os.getenv("LAKEBASE_WRITER_USE_FAKE_PSYCOPG") == "1":
+        import importlib
+
+        writer_module = importlib.import_module(
+            "lakebase_foreachwriter.LakebaseForeachWriter"
+        )
+        writer_module.psycopg = psycopg
 except ImportError:
     print(
         "Warning: Could not import lakebase_writer. Make sure it's in your Python path."

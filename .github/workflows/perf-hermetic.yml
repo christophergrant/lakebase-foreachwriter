@@ -1,0 +1,60 @@
+name: Perf Hermetic
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  perf-hermetic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          path: head
+
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        working-directory: head
+        run: uv sync --dev
+
+      - name: Run hermetic reliability tests
+        working-directory: head
+        run: uv run pytest tests/test_reliability.py tests/test_perf_hermetic.py
+
+      - name: Run hermetic perf comparison
+        working-directory: head
+        env:
+          LAKEBASE_WRITER_USE_FAKE_PSYCOPG: "1"
+          LAKEBASE_WRITER_HOST: fake-host
+          LAKEBASE_WRITER_USER: fake-user
+          LAKEBASE_WRITER_PASSWORD: fake-password
+        run: |
+          mkdir -p perf-results/base perf-results/head
+          for mode in insert upsert bulk-insert; do
+            PYTHONPATH="$GITHUB_WORKSPACE/base/src" uv run python tests/perf_runner.py \
+              --profile ci_smoke_hermetic \
+              --mode "$mode" \
+              --output-json "perf-results/base/${mode}.json"
+            PYTHONPATH="$GITHUB_WORKSPACE/head/src" uv run python tests/perf_runner.py \
+              --profile ci_smoke_hermetic \
+              --mode "$mode" \
+              --output-json "perf-results/head/${mode}.json"
+          done
+          uv run python tests/compare_perf_results.py \
+            --base-dir perf-results/base \
+            --head-dir perf-results/head
