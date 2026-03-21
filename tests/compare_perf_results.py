@@ -67,9 +67,7 @@ def main() -> int:
         max_allowed_p95 = base["p95_latency_ms"] * (
             1.0 + args.max_p95_regression_pct / 100.0
         )
-        min_allowed_success_rate = (
-            base["success_rate"] - args.max_success_rate_drop_pct
-        )
+        min_allowed_success_rate = base["success_rate"] - args.max_success_rate_drop_pct
 
         print(
             f"{mode}: "

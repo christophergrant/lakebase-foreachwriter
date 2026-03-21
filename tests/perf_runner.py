@@ -4,13 +4,33 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from benchmark import BenchmarkConfig
+
+def load_benchmark_symbols() -> tuple[type[Any], type[Any]]:
+    benchmark_path = Path(__file__).with_name("benchmark.py")
+    spec = importlib.util.spec_from_file_location(
+        "lakebase_writer_benchmark", benchmark_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load benchmark module from {benchmark_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    benchmark_config_cls = getattr(module, "BenchmarkConfig", None)
+    benchmark_cls = getattr(module, "LakebaseBenchmark", None)
+    if benchmark_config_cls is None or benchmark_cls is None:
+        raise RuntimeError(
+            "benchmark.py is missing BenchmarkConfig or LakebaseBenchmark"
+        )
+
+    return benchmark_config_cls, benchmark_cls
 
 
 def load_profile(profile_config: Path, profile_name: str, mode: str) -> dict[str, Any]:
@@ -51,9 +71,9 @@ def build_config(profile_data: dict[str, Any], mode: str, benchmark_config_cls):
 
 def result_to_dict(
     profile_name: str,
-    config: BenchmarkConfig,
+    config: Any,
     thresholds: dict[str, Any],
-    result,
+    result: Any,
 ) -> dict[str, Any]:
     return {
         "profile": profile_name,
@@ -158,13 +178,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    from benchmark import BenchmarkConfig, LakebaseBenchmark
-
+    benchmark_config_cls, benchmark_cls = load_benchmark_symbols()
     profile_data = load_profile(args.profile_config, args.profile, args.mode)
-    config = build_config(profile_data, args.mode, BenchmarkConfig)
+    config = build_config(profile_data, args.mode, benchmark_config_cls)
     thresholds = profile_data["mode_config"]["thresholds"]
 
-    benchmark = LakebaseBenchmark(config)
+    benchmark = benchmark_cls(config)
     result = benchmark.run_benchmark(table_prefix=f"perf_{args.profile}_{args.mode}")
     benchmark.print_results(result)
 

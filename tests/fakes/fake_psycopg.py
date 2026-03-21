@@ -37,7 +37,9 @@ class FakePsycopgConfig:
             execute_per_row_ms=float(
                 os.getenv("LAKEBASE_WRITER_FAKE_DB_EXECUTE_PER_ROW_MS", "0.01")
             ),
-            copy_base_ms=float(os.getenv("LAKEBASE_WRITER_FAKE_DB_COPY_BASE_MS", "1.0")),
+            copy_base_ms=float(
+                os.getenv("LAKEBASE_WRITER_FAKE_DB_COPY_BASE_MS", "1.0")
+            ),
             copy_per_row_ms=float(
                 os.getenv("LAKEBASE_WRITER_FAKE_DB_COPY_PER_ROW_MS", "0.005")
             ),
@@ -103,8 +105,12 @@ class FakeDatabaseState:
 
             if effective_primary_keys:
                 for existing in table.rows:
-                    existing_key = tuple(existing[key] for key in effective_primary_keys)
-                    candidate_key = tuple(payload[key] for key in effective_primary_keys)
+                    existing_key = tuple(
+                        existing[key] for key in effective_primary_keys
+                    )
+                    candidate_key = tuple(
+                        payload[key] for key in effective_primary_keys
+                    )
                     if existing_key == candidate_key:
                         existing.update(payload)
                         break

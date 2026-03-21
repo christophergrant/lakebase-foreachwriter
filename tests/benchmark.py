@@ -26,6 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import ModuleType
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ def _load_benchmark_env() -> None:
 _load_benchmark_env()
 
 
-def _load_psycopg():
+def _load_psycopg() -> Any:
     """Load either the real psycopg module or the hermetic fake backend."""
     if os.getenv("LAKEBASE_WRITER_USE_FAKE_PSYCOPG") != "1":
         import psycopg as real_psycopg
@@ -55,12 +56,18 @@ def _load_psycopg():
         "lakebase_writer_fake_psycopg", fake_module_path
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load fake psycopg backend from {fake_module_path}")
+        raise RuntimeError(
+            f"Failed to load fake psycopg backend from {fake_module_path}"
+        )
 
     fake_module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = fake_module
     spec.loader.exec_module(fake_module)
-    return fake_module.psycopg
+    module = fake_module if isinstance(fake_module, ModuleType) else None
+    psycopg_module = getattr(module, "psycopg", None)
+    if psycopg_module is None:
+        raise RuntimeError("Fake psycopg backend did not expose a psycopg module")
+    return psycopg_module
 
 
 psycopg = _load_psycopg()

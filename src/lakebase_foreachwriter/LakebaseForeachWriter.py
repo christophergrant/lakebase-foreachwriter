@@ -154,7 +154,7 @@ class LakebaseForeachWriter:
     def process(self, row: Row | tuple):
         if self.worker_error:
             raise Exception(f"Worker failed: {self.worker_error}")
-        
+
         if isinstance(row, Row):
             row_data = tuple(row[col] for col in self.columns)
         else:
