@@ -32,8 +32,9 @@ class TestBuildConnParams:
         }
         assert result == expected
 
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_with_lakebase_name(self, mock_ws_client):
+    def test_with_lakebase_name(self, mock_ws_client, mock_config):
         # Create a mock database instance with a read_write_dns property
         mock_db = Mock()
         mock_db.read_write_dns = "test-host"
@@ -46,6 +47,7 @@ class TestBuildConnParams:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         result = _build_conn_params("user", "pass", lakebase_name="test-db")
 
@@ -64,8 +66,9 @@ class TestBuildConnParams:
         ):
             _build_conn_params("user", "pass")
 
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_host_retrieval_fails(self, mock_ws_client):
+    def test_host_retrieval_fails(self, mock_ws_client, mock_config):
         # Create a mock database client that raises NotFound
         mock_db_client = Mock()
         mock_db_client.get_database_instance.side_effect = NotFound(
@@ -76,6 +79,7 @@ class TestBuildConnParams:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         with pytest.raises(NotFound, match="Resource not found"):
             _build_conn_params("user", "pass", lakebase_name="test-db")
@@ -190,7 +194,7 @@ class TestLakebaseForeachWriter:
         assert writer.partition_id == 1
         assert writer.epoch_id == 100
         assert writer.conn == mock_conn
-        assert isinstance(writer.queue, queue.SimpleQueue)
+        assert isinstance(writer.queue, queue.Queue)
         assert isinstance(writer.stop_event, threading.Event)
         assert writer.worker_thread.is_alive()
 
@@ -203,7 +207,7 @@ class TestLakebaseForeachWriter:
         assert result is False
 
     def test_process_row(self, writer):
-        writer.queue = queue.SimpleQueue()
+        writer.queue = queue.Queue()
         writer.worker_error = None
 
         row = Row(id=1, name="test")
@@ -306,19 +310,19 @@ class TestLakebaseForeachWriter:
         mock_conn.rollback.assert_called_once()
 
     def test_flush_remaining(self, writer):
-        writer.queue = queue.SimpleQueue()
+        writer.queue = queue.Queue()
         writer.queue.put((1, "test"))
         writer.queue.put((2, "test2"))
         writer.batch = []
 
-        with patch.object(writer, "_flush_batch") as mock_flush:
+        with patch.object(writer, "_flush_with_retry") as mock_flush:
             writer._flush_remaining()
 
         assert writer.batch == [(1, "test"), (2, "test2")]
         mock_flush.assert_called_once()
 
     def test_close_with_large_queue_warning(self, writer, caplog):
-        writer.queue = queue.SimpleQueue()
+        writer.queue = queue.Queue()
         for i in range(10000):  # More than 5x batch_size (1000)
             writer.queue.put((i, f"test{i}"))
 
@@ -336,7 +340,7 @@ class TestLakebaseForeachWriter:
         assert "more than 5x the batch size" in caplog.text
 
     def test_worker_thread_batch_processing(self, writer):
-        writer.queue = queue.SimpleQueue()
+        writer.queue = queue.Queue()
         writer.stop_event = threading.Event()
         writer.batch = []
         writer.batch_size = 2
@@ -364,7 +368,7 @@ class TestLakebaseForeachWriter:
         mock_flush.assert_called()
 
     def test_worker_thread_time_based_flush(self, writer):
-        writer.queue = queue.SimpleQueue()
+        writer.queue = queue.Queue()
         writer.stop_event = threading.Event()
         writer.batch = [(1, "test")]
         writer.batch_size = 10
@@ -441,6 +445,8 @@ class TestLakebaseForeachWriter:
         time.sleep(0.15)
 
         # Stop the worker
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
         writer.stop_event.set()
         writer.worker_thread.join(timeout=5)
 
@@ -456,8 +462,11 @@ class TestLakebaseForeachWriter:
         )
 
     # Additional test to verify lakebase_name success case by mocking at class level
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_with_lakebase_name_integration(self, mock_ws_client, mock_dataframe):
+    def test_with_lakebase_name_integration(
+        self, mock_ws_client, mock_config, mock_dataframe
+    ):
         """Test successful initialization with lakebase_name using WorkspaceClient mock"""
         # Create a mock database instance with a read_write_dns property
         mock_db = Mock()
@@ -471,6 +480,7 @@ class TestLakebaseForeachWriter:
         mock_instance = Mock()
         mock_instance.database = mock_db_client
         mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
 
         writer = LakebaseForeachWriter(
             username="user",
@@ -485,3 +495,250 @@ class TestLakebaseForeachWriter:
         assert writer.conn_params["password"] == "pass"
         mock_ws_client.assert_called_once()
         mock_db_client.get_database_instance.assert_called_once_with("test-db")
+
+    def test_init_backpressure_and_retry_defaults(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+        )
+        assert writer.max_queue_size == 10_000
+        assert writer.max_retries == 3
+        assert writer.retry_base_delay_s == 0.5
+
+    @patch("psycopg.connect")
+    def test_open_creates_bounded_queue(self, mock_connect, writer):
+        mock_connect.return_value = Mock()
+        writer.open(0, 0)
+        assert isinstance(writer.queue, queue.Queue)
+        assert writer.queue.maxsize == writer.max_queue_size
+
+    def test_process_blocks_on_full_queue(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            max_queue_size=2,
+        )
+        writer.queue = queue.Queue(maxsize=2)
+        writer.worker_error = None
+
+        # Fill the queue
+        writer.queue.put((1, "a"))
+        writer.queue.put((2, "b"))
+        assert writer.queue.full()
+
+        # process() should block; run it in a thread
+        blocked = threading.Event()
+        completed = threading.Event()
+
+        def do_process():
+            blocked.set()
+            writer.process(Row(id=3, name="c"))
+            completed.set()
+
+        t = threading.Thread(target=do_process)
+        t.start()
+
+        blocked.wait(timeout=2)
+        time.sleep(0.2)
+        assert not completed.is_set(), "process() should be blocked on full queue"
+
+        # Drain one item to unblock
+        writer.queue.get()
+        completed.wait(timeout=3)
+        assert completed.is_set(), "process() should have completed after queue drained"
+        t.join(timeout=2)
+
+    def test_process_raises_on_worker_error_while_blocked(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            max_queue_size=1,
+        )
+        writer.queue = queue.Queue(maxsize=1)
+        writer.worker_error = None
+
+        # Fill the queue
+        writer.queue.put((1, "a"))
+
+        error_raised = threading.Event()
+        captured_error = []
+
+        def do_process():
+            try:
+                writer.process(Row(id=2, name="b"))
+            except Exception as e:
+                captured_error.append(str(e))
+                error_raised.set()
+
+        t = threading.Thread(target=do_process)
+        t.start()
+
+        time.sleep(0.2)
+        # Simulate worker dying
+        writer.worker_error = "connection lost"
+
+        error_raised.wait(timeout=3)
+        assert error_raised.is_set()
+        assert "connection lost" in captured_error[0]
+        t.join(timeout=2)
+
+    def test_flush_with_retry_succeeds_after_transient_failure(self, writer):
+        writer.partition_id = 0
+        writer.epoch_id = 0
+        writer.stop_event = threading.Event()
+        writer.batch = [(1, "test")]
+        writer.max_retries = 3
+        writer.retry_base_delay_s = 0.01  # Fast for tests
+
+        call_count = {"value": 0}
+
+        def mock_flush():
+            call_count["value"] += 1
+            if call_count["value"] <= 2:
+                raise Exception("transient error")
+            writer.batch = []
+
+        with patch.object(writer, "_flush_batch", side_effect=mock_flush):
+            with patch.object(writer, "_reconnect") as mock_reconnect:
+                writer._flush_with_retry()
+
+        assert call_count["value"] == 3
+        assert mock_reconnect.call_count == 2
+
+    def test_flush_with_retry_exhausts_retries(self, writer):
+        writer.partition_id = 0
+        writer.epoch_id = 0
+        writer.stop_event = threading.Event()
+        writer.batch = [(1, "test")]
+        writer.max_retries = 3
+        writer.retry_base_delay_s = 0.01
+
+        with patch.object(
+            writer, "_flush_batch", side_effect=Exception("persistent error")
+        ):
+            with patch.object(writer, "_reconnect"):
+                with pytest.raises(Exception, match="persistent error"):
+                    writer._flush_with_retry()
+
+    @patch("psycopg.connect")
+    def test_worker_survives_transient_failure(self, mock_connect, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            batch_size=2,
+            max_retries=3,
+            retry_base_delay_s=0.01,
+        )
+
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+        mock_cursor.__exit__ = Mock(return_value=None)
+        # Fail once, then succeed
+        mock_cursor.executemany.side_effect = [Exception("transient"), None, None]
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
+
+        writer.open(0, 0)
+
+        writer.process(Row(id=1, name="a"))
+        writer.process(Row(id=2, name="b"))
+
+        time.sleep(1.0)  # Let worker process
+
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
+        writer.stop_event.set()
+        writer.worker_thread.join(timeout=5)
+
+        assert writer.worker_error is None
+
+    @patch("psycopg.connect")
+    def test_worker_dies_after_max_retries(self, mock_connect, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            batch_size=2,
+            max_retries=1,
+            retry_base_delay_s=0.01,
+        )
+
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+        mock_cursor.__exit__ = Mock(return_value=None)
+        mock_cursor.executemany.side_effect = Exception("permanent error")
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
+
+        writer.open(0, 0)
+
+        writer.process(Row(id=1, name="a"))
+        writer.process(Row(id=2, name="b"))
+
+        time.sleep(1.0)
+
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
+        writer.stop_event.set()
+        writer.worker_thread.join(timeout=5)
+
+        assert writer.worker_error is not None
+        assert "permanent error" in writer.worker_error
+
+    def test_reconnect_called_between_retries(self, writer):
+        writer.partition_id = 0
+        writer.epoch_id = 0
+        writer.stop_event = threading.Event()
+        writer.batch = [(1, "test")]
+        writer.max_retries = 3
+        writer.retry_base_delay_s = 0.01
+
+        call_order = []
+
+        def mock_flush():
+            call_order.append("flush")
+            if len([c for c in call_order if c == "flush"]) <= 2:
+                raise Exception("error")
+            writer.batch = []
+
+        def mock_reconnect():
+            call_order.append("reconnect")
+
+        with patch.object(writer, "_flush_batch", side_effect=mock_flush):
+            with patch.object(writer, "_reconnect", side_effect=mock_reconnect):
+                writer._flush_with_retry()
+
+        assert call_order == [
+            "flush",
+            "reconnect",
+            "flush",
+            "reconnect",
+            "flush",
+        ]
+
+    def test_flush_remaining_uses_retry(self, writer):
+        writer.queue = queue.Queue()
+        writer.queue.put((1, "test"))
+        writer.batch = []
+
+        with patch.object(writer, "_flush_with_retry") as mock_retry:
+            writer._flush_remaining()
+
+        assert writer.batch == [(1, "test")]
+        mock_retry.assert_called_once()
