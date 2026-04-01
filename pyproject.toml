@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "databricks-connect==16.4.1",
-    "databricks-sdk==0.57.0",
+    "databricks-sdk>=0.102.0",
     "psycopg==3.2.9",
 ]
 
@@ -47,6 +47,7 @@ dev = [
     "python-dotenv>=1.1.1",
     "pre-commit>=3.6.0",
     "scikit-learn>=1.7.1",
+    "pandas>=2.2.0",
 ]
 
 [tool.ruff]
