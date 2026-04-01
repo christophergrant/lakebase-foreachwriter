@@ -16,7 +16,10 @@ from pyspark.sql.types import (
 )
 
 from lakebase_foreachwriter import LakebaseForeachWriter
-from lakebase_foreachwriter.LakebaseForeachWriter import _build_conn_params
+from lakebase_foreachwriter.LakebaseForeachWriter import (
+    _build_conn_params,
+    _host_cache,
+)
 
 
 class TestBuildConnParams:
@@ -69,19 +72,23 @@ class TestBuildConnParams:
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
     def test_host_retrieval_fails(self, mock_ws_client, mock_config):
-        # Create a mock database client that raises NotFound
+        _host_cache.pop("test-db", None)
+
+        # Both APIs fail — provisioned raises NotFound, autoscaling returns empty
         mock_db_client = Mock()
         mock_db_client.get_database_instance.side_effect = NotFound(
             "Resource not found"
         )
+        mock_pg_client = Mock()
+        mock_pg_client.list_endpoints.return_value = []
 
-        # Set up the workspace client instance to return our mock database client
         mock_instance = Mock()
         mock_instance.database = mock_db_client
+        mock_instance.postgres = mock_pg_client
         mock_ws_client.return_value = mock_instance
         mock_config.return_value = Mock()
 
-        with pytest.raises(NotFound, match="Resource not found"):
+        with pytest.raises(ValueError, match="No Lakebase instance found"):
             _build_conn_params("user", "pass", lakebase_name="test-db")
 
 
@@ -461,24 +468,26 @@ class TestLakebaseForeachWriter:
             f"triggering inside the dequeue loop."
         )
 
-    # Additional test to verify lakebase_name success case by mocking at class level
+    # Test lakebase_name resolving via provisioned API
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
     @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
-    def test_with_lakebase_name_integration(
+    def test_with_lakebase_name_provisioned(
         self, mock_ws_client, mock_config, mock_dataframe
     ):
-        """Test successful initialization with lakebase_name using WorkspaceClient mock"""
-        # Create a mock database instance with a read_write_dns property
-        mock_db = Mock()
-        mock_db.read_write_dns = "test-host"
+        """Test initialization with lakebase_name hitting provisioned path"""
+        _host_cache.pop("test-db-prov", None)
 
-        # Create a mock database client that returns our mock database instance
+        mock_db = Mock()
+        mock_db.read_write_dns = "provisioned-host"
         mock_db_client = Mock()
         mock_db_client.get_database_instance.return_value = mock_db
 
-        # Set up the workspace client instance to return our mock database client
+        mock_pg_client = Mock()
+        mock_pg_client.list_endpoints.return_value = []
+
         mock_instance = Mock()
         mock_instance.database = mock_db_client
+        mock_instance.postgres = mock_pg_client
         mock_ws_client.return_value = mock_instance
         mock_config.return_value = Mock()
 
@@ -487,14 +496,44 @@ class TestLakebaseForeachWriter:
             password="pass",
             table="table",
             df=mock_dataframe,
-            lakebase_name="test-db",
+            lakebase_name="test-db-prov",
         )
 
-        assert writer.conn_params["host"] == "test-host"
-        assert writer.conn_params["user"] == "user"
-        assert writer.conn_params["password"] == "pass"
-        mock_ws_client.assert_called_once()
-        mock_db_client.get_database_instance.assert_called_once_with("test-db")
+        assert writer.conn_params["host"] == "provisioned-host"
+
+    # Test lakebase_name resolving via autoscaling API
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
+    def test_with_lakebase_name_autoscaling(
+        self, mock_ws_client, mock_config, mock_dataframe
+    ):
+        """Test initialization with lakebase_name hitting autoscaling path"""
+        _host_cache.pop("test-db-auto", None)
+
+        mock_db_client = Mock()
+        mock_db_client.get_database_instance.side_effect = NotFound("not found")
+
+        mock_endpoint = Mock()
+        mock_endpoint.status.endpoint_type = "ENDPOINT_TYPE_READ_WRITE"
+        mock_endpoint.status.hosts.host = "autoscaling-host"
+        mock_pg_client = Mock()
+        mock_pg_client.list_endpoints.return_value = [mock_endpoint]
+
+        mock_instance = Mock()
+        mock_instance.database = mock_db_client
+        mock_instance.postgres = mock_pg_client
+        mock_ws_client.return_value = mock_instance
+        mock_config.return_value = Mock()
+
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            lakebase_name="test-db-auto",
+        )
+
+        assert writer.conn_params["host"] == "autoscaling-host"
 
     def test_init_backpressure_and_retry_defaults(self, mock_dataframe):
         writer = LakebaseForeachWriter(

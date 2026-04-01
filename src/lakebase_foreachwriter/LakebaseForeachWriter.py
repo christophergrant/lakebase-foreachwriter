@@ -7,19 +7,72 @@ from collections.abc import Sequence
 import psycopg
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
+from databricks.sdk.errors import NotFound
 from pyspark.sql import DataFrame, Row
 from pyspark.sql.types import ArrayType, MapType, StructType
 
 
+_host_cache: dict[str, str] = {}
+
+
+def _resolve_host(ws: WorkspaceClient, lakebase_name: str) -> str:
+    """Resolve a Lakebase instance name to a host, supporting both Provisioned and Autoscaling.
+
+    Results are cached for the lifetime of the process so that subsequent
+    partitions and micro-batches skip the API round-trip entirely.
+    """
+    if lakebase_name in _host_cache:
+        return _host_cache[lakebase_name]
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _try_provisioned():
+        return ws.database.get_database_instance(lakebase_name).read_write_dns
+
+    def _try_autoscaling():
+        endpoints = list(
+            ws.postgres.list_endpoints(
+                parent=f"projects/{lakebase_name}/branches/production"
+            )
+        )
+        for ep in endpoints:
+            if ep.status and "READ_WRITE" in str(ep.status.endpoint_type):
+                return ep.status.hosts.host
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(_try_provisioned): "provisioned",
+            pool.submit(_try_autoscaling): "autoscaling",
+        }
+        for future in as_completed(futures):
+            try:
+                host = future.result()
+                if host:
+                    _host_cache[lakebase_name] = host
+                    return host
+            except Exception:
+                continue
+
+    raise ValueError(
+        f"No Lakebase instance found for '{lakebase_name}'. "
+        "Checked both Provisioned (database instance) and Autoscaling (postgres project)."
+    )
+
+
 def _build_conn_params(
-    user: str, password: str, lakebase_name: str | None = None, host: str | None = None
+    user: str,
+    password: str,
+    lakebase_name: str | None = None,
+    host: str | None = None,
+    sslmode: str | None = None,
 ) -> dict:
     """Build connection parameters for lakebase database."""
     if not host:
         if not lakebase_name:
             raise ValueError("Either host or lakebase_name must be provided")
         ws = WorkspaceClient(config=Config())
-        host = ws.database.get_database_instance(lakebase_name).read_write_dns
+        host = _resolve_host(ws, lakebase_name)
 
     if not host:
         raise ValueError(
@@ -32,7 +85,7 @@ def _build_conn_params(
         "dbname": "databricks_postgres",
         "user": user,
         "password": password,
-        "sslmode": "require",
+        "sslmode": sslmode or "require",
     }
 
 
@@ -80,6 +133,7 @@ class LakebaseForeachWriter:
         df: DataFrame,
         lakebase_name: str | None = None,
         host: str | None = None,
+        sslmode: str | None = None,
         mode: str = "insert",
         primary_keys: Sequence[str] | None = None,
         batch_size: int = 1000,
@@ -114,7 +168,21 @@ class LakebaseForeachWriter:
             password=password,
             lakebase_name=lakebase_name,
             host=host,
+            sslmode=sslmode,
         )
+
+        # Local development convenience: if connecting to a local Postgres,
+        # default to disabling SSL and using the default 'postgres' database
+        # unless explicitly configured via lakebase_name.
+        if host and host in {"localhost", "127.0.0.1"} and not lakebase_name:
+            try:
+                # Prefer caller-provided sslmode if given
+                self.conn_params["sslmode"] = sslmode or "disable"
+                # Default dbname to the standard local database
+                self.conn_params["dbname"] = "postgres"
+            except Exception:
+                # Best-effort adjustment; leave as-is on any issue
+                pass
 
         # Initialize runtime state
         self.conn: psycopg.Connection | None = None
