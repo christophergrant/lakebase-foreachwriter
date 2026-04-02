@@ -8,6 +8,27 @@ The writer buffers rows in memory, flushes on `batch_size` or `batch_interval_ms
 - `upsert`: `INSERT ... ON CONFLICT DO UPDATE`
 - `bulk-insert`: high-throughput PostgreSQL `COPY`
 
+```mermaid
+flowchart TD
+  A[Streaming DataFrame] --> B[LakebaseForeachWriter]
+  B --> C{Connection input}
+  C -->|host| D[Use host directly]
+  C -->|lakebase_name| E[Resolve read-write host via Databricks SDK]
+  D --> F[Open psycopg connection]
+  E --> F
+  F --> G[Buffer rows]
+  G --> H{Flush trigger}
+  H -->|batch_size| I[Write batch]
+  H -->|batch_interval_ms| I
+  I --> J{Mode}
+  J --> K[INSERT]
+  J --> L[UPSERT]
+  J --> M[COPY]
+  K --> N[(Target table)]
+  L --> N
+  M --> N
+```
+
 ## Prerequisites and Compatibility
 
 - Python 3.12+
