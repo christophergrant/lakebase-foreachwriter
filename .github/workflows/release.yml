@@ -8,19 +8,17 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
-      id-token: write  # IMPORTANT: mandatory for trusted publishing
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install uv
         run: pip install uv
@@ -31,22 +29,12 @@ jobs:
       - name: Build package
         run: uv build
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          # Use trusted publishing instead of password
-          # Repository needs to be configured in PyPI with trusted publishing
-          attestations: true
-
       - name: Create GitHub Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
           body: |
             Changes in this Release:
-            - See [CHANGELOG.md](https://github.com/databricks/lakebase-foreachwriter/blob/main/CHANGELOG.md) for detailed changes 
+            - See [CHANGELOG.md](https://github.com/databricks/lakebase-foreachwriter/blob/main/CHANGELOG.md) for detailed changes

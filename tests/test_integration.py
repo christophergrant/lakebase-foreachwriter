@@ -28,21 +28,25 @@ from lakebase_foreachwriter import LakebaseForeachWriter
 load_dotenv(override=True)
 
 
-def get_required_env(name: str) -> str:
-    value = os.getenv(name)
-    if value is None:
-        raise ValueError(f"Required environment variable {name} is not set")
-    return value
+def get_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return ""
 
 
-DB_HOST = get_required_env("LAKEBASE_WRITER_HOST")
-DB_USER = get_required_env("LAKEBASE_WRITER_USER")
-DB_PASSWORD = get_required_env("LAKEBASE_WRITER_PASSWORD")
-LAKEBASE_NAME = get_required_env("LAKEBASE_WRITER_LAKEBASE_NAME")
+DB_HOST = get_env("LAKEBASE_WRITER_HOST", "LAKEBASE_HOST")
+DB_USER = get_env("LAKEBASE_WRITER_USER", "LAKEBASE_USER")
+DB_PASSWORD = get_env("LAKEBASE_WRITER_PASSWORD", "LAKEBASE_PASSWORD")
+LAKEBASE_NAME = get_env("LAKEBASE_WRITER_LAKEBASE_NAME", "LAKEBASE_NAME")
 
 pytestmark = pytest.mark.skipif(
-    not all([DB_HOST, DB_USER, DB_PASSWORD, LAKEBASE_NAME]),
-    reason="Database credentials not found in environment variables",
+    not all([DB_HOST, DB_USER, DB_PASSWORD]),
+    reason=(
+        "Integration tests require LAKEBASE_WRITER_HOST, "
+        "LAKEBASE_WRITER_USER, and LAKEBASE_WRITER_PASSWORD"
+    ),
 )
 
 

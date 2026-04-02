@@ -9,15 +9,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      LAKEBASE_WRITER_HOST: ${{ secrets.LAKEBASE_WRITER_HOST || secrets.LAKEBASE_HOST }}
+      LAKEBASE_WRITER_USER: ${{ secrets.LAKEBASE_WRITER_USER || secrets.LAKEBASE_USER }}
+      LAKEBASE_WRITER_PASSWORD: ${{ secrets.LAKEBASE_WRITER_PASSWORD || secrets.LAKEBASE_PASSWORD }}
+      LAKEBASE_WRITER_LAKEBASE_NAME: ${{ secrets.LAKEBASE_WRITER_LAKEBASE_NAME || secrets.LAKEBASE_NAME }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install uv
         run: pip install uv
@@ -36,9 +41,14 @@ jobs:
 
       - name: Run integration tests
         # This step only runs if the required secrets are available.
-        if: ${{ env.LAKEBASE_USER != '' && env.LAKEBASE_PASSWORD != '' && env.LAKEBASE_NAME != '' }}
-        env:
-          LAKEBASE_USER: ${{ secrets.LAKEBASE_USER }}
-          LAKEBASE_PASSWORD: ${{ secrets.LAKEBASE_PASSWORD }}
-          LAKEBASE_NAME: ${{ secrets.LAKEBASE_NAME }}
-        run: uv run pytest tests/test_integration.py 
+        if: ${{ env.LAKEBASE_WRITER_HOST != '' && env.LAKEBASE_WRITER_USER != '' && env.LAKEBASE_WRITER_PASSWORD != '' }}
+        run: uv run pytest tests/test_integration.py
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lakebase-foreachwriter-dist
+          path: dist/*

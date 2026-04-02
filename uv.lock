@@ -277,13 +277,13 @@ name = "lakebase-foreachwriter"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "databricks-connect" },
     { name = "databricks-sdk" },
     { name = "psycopg" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "databricks-connect" },
     { name = "pandas" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -297,13 +297,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "databricks-connect", specifier = "==16.4.1" },
     { name = "databricks-sdk", specifier = ">=0.102.0" },
     { name = "psycopg", specifier = "==3.2.9" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "databricks-connect", specifier = "==16.4.1" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pre-commit", specifier = ">=3.6.0" },
     { name = "pytest", specifier = ">=8.4.1" },
