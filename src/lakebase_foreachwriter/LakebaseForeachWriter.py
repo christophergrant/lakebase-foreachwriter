@@ -214,9 +214,7 @@ class LakebaseForeachWriter:
             if not logger.handlers:
                 handler = logging.StreamHandler(sys.stderr)
                 handler.setFormatter(
-                    logging.Formatter(
-                        "%(asctime)s %(levelname)s %(name)s %(message)s"
-                    )
+                    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
                 )
                 logger.addHandler(handler)
                 logger.propagate = False
@@ -372,9 +370,7 @@ class LakebaseForeachWriter:
                 f"[{self.partition_id}|{self.epoch_id}] Reconnected to database"
             )
         except Exception as e:
-            logger.error(
-                f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}"
-            )
+            logger.error(f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}")
             raise
 
     def _flush_with_retry(self):
