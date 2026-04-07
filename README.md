@@ -191,6 +191,25 @@ CREATE ROLE "serviceprincipal"
 
 An alternative design is `foreachBatch` plus Spark's batch JDBC writer. That can work well, but it generally has higher latency than using this `ForeachWriter` directly, and it does not give you the same built-in `upsert` and `bulk-insert` modes.
 
+## Logging
+
+The writer uses a named `lakebase_foreachwriter` logger that emits to executor `stderr`. A default handler is configured automatically in `open()` so that flush timings, retries, and errors are visible in the Spark UI executor logs without any setup.
+
+To customize logging (change the level, format, or destination), configure the logger before starting your streaming query:
+
+```python
+import logging
+from lakebase_foreachwriter.LakebaseForeachWriter import logger
+
+logger.setLevel(logging.DEBUG)
+
+handler = logging.FileHandler("/tmp/foreachwriter.log")
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(handler)
+```
+
+When the writer sees that the logger already has handlers, it skips its own default setup. This gives you full control over where and how log messages are routed.
+
 ## Running Tests
 
 Set up the repo for local development:

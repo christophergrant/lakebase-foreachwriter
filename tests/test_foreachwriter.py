@@ -1,3 +1,4 @@
+import logging
 import queue
 import threading
 import time
@@ -340,11 +341,18 @@ class TestLakebaseForeachWriter:
         writer.partition_id = 1
         writer.epoch_id = 100
 
-        with patch.object(writer, "_flush_remaining"):
-            writer.close(None)
+        from lakebase_foreachwriter.LakebaseForeachWriter import logger as fw_logger
 
-        assert "remaining queue size is 10000" in caplog.text
-        assert "more than 5x the batch size" in caplog.text
+        fw_logger.propagate = True
+        try:
+            with caplog.at_level(logging.WARNING, logger="lakebase_foreachwriter"):
+                with patch.object(writer, "_flush_remaining"):
+                    writer.close(None)
+
+            assert "remaining queue size is 10000" in caplog.text
+            assert "more than 5x the batch size" in caplog.text
+        finally:
+            fw_logger.propagate = False
 
     def test_worker_thread_batch_processing(self, writer):
         writer.queue = queue.Queue()

@@ -214,11 +214,10 @@ class LakebaseForeachWriter:
             if not logger.handlers:
                 handler = logging.StreamHandler(sys.stderr)
                 handler.setFormatter(
-                    logging.Formatter(
-                        "%(asctime)s %(levelname)s %(name)s %(message)s"
-                    )
+                    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
                 )
                 logger.addHandler(handler)
+                logger.propagate = False
             logger.setLevel(logging.INFO)
 
             # Connect to database
@@ -275,14 +274,15 @@ class LakebaseForeachWriter:
                         f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
                     )
 
-            if self.queue.qsize() > self.batch_size * 5:
+            if self.queue and self.queue.qsize() > self.batch_size * 5:
                 logger.warning(
                     f"[{self.partition_id}|{self.epoch_id}] \
                 While closing the writer, remaining queue size is {self.queue.qsize()}, which is more than 5x the batch size. \
                 This may be indicative of an overwhelmed or misconfigured writer."
                 )
 
-            self._flush_remaining()
+            if self.queue:
+                self._flush_remaining()
 
         finally:
             if self.conn:
@@ -370,9 +370,7 @@ class LakebaseForeachWriter:
                 f"[{self.partition_id}|{self.epoch_id}] Reconnected to database"
             )
         except Exception as e:
-            logger.error(
-                f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}"
-            )
+            logger.error(f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}")
             raise
 
     def _flush_with_retry(self):
