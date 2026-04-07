@@ -219,6 +219,7 @@ class LakebaseForeachWriter:
                     )
                 )
                 logger.addHandler(handler)
+                logger.propagate = False
             logger.setLevel(logging.INFO)
 
             # Connect to database
@@ -275,14 +276,15 @@ class LakebaseForeachWriter:
                         f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
                     )
 
-            if self.queue.qsize() > self.batch_size * 5:
+            if self.queue and self.queue.qsize() > self.batch_size * 5:
                 logger.warning(
                     f"[{self.partition_id}|{self.epoch_id}] \
                 While closing the writer, remaining queue size is {self.queue.qsize()}, which is more than 5x the batch size. \
                 This may be indicative of an overwhelmed or misconfigured writer."
                 )
 
-            self._flush_remaining()
+            if self.queue:
+                self._flush_remaining()
 
         finally:
             if self.conn:
