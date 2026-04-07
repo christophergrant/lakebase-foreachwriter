@@ -13,6 +13,8 @@ from pyspark.sql import DataFrame, Row
 from pyspark.sql.types import ArrayType, MapType, StructType
 
 
+logger = logging.getLogger("lakebase_foreachwriter")
+
 _host_cache: dict[str, str] = {}
 
 
@@ -203,17 +205,21 @@ class LakebaseForeachWriter:
             self.partition_id = partition_id
             self.epoch_id = epoch_id
 
-            # Configure logging for this executor worker process.
-            # Without this, logging.info() calls are silently dropped
-            # because Python's root logger defaults to WARNING level.
-            # force=True is required because the root logger may already
-            # be configured by Spark's Python worker bootstrap.
-            logging.basicConfig(
-                level=logging.INFO,
-                stream=sys.stderr,
-                force=True,
-                format="%(asctime)s %(levelname)s %(name)s %(message)s",
-            )
+            # Ensure the module logger can emit on this executor.
+            # Each executor is a separate Python process whose logger
+            # starts with no handlers, so INFO messages are silently
+            # dropped.  Adding a stderr handler here (idempotently)
+            # makes flush/retry/close messages visible in the executor
+            # logs without touching the root logger.
+            if not logger.handlers:
+                handler = logging.StreamHandler(sys.stderr)
+                handler.setFormatter(
+                    logging.Formatter(
+                        "%(asctime)s %(levelname)s %(name)s %(message)s"
+                    )
+                )
+                logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
 
             # Connect to database
             self.conn = psycopg.connect(**self.conn_params)
@@ -229,13 +235,13 @@ class LakebaseForeachWriter:
             self.worker_thread = threading.Thread(target=self._worker, daemon=True)
             self.worker_thread.start()
 
-            logging.info(
+            logger.info(
                 f"[{partition_id}|{epoch_id}] Opening writer for table {self.table} with schema {self.columns}"
             )
             return True
 
         except Exception as e:
-            logging.error(f"Failed to open writer: {e}")
+            logger.error(f"Failed to open writer: {e}")
             return False
 
     def process(self, row: Row | tuple):
@@ -265,12 +271,12 @@ class LakebaseForeachWriter:
             if self.worker_thread and self.worker_thread.is_alive():
                 self.worker_thread.join(timeout=30.0)
                 if self.worker_thread.is_alive():
-                    logging.error(
+                    logger.error(
                         f"[{self.partition_id}|{self.epoch_id}] Worker thread did not stop within 30s"
                     )
 
             if self.queue.qsize() > self.batch_size * 5:
-                logging.warning(
+                logger.warning(
                     f"[{self.partition_id}|{self.epoch_id}] \
                 While closing the writer, remaining queue size is {self.queue.qsize()}, which is more than 5x the batch size. \
                 This may be indicative of an overwhelmed or misconfigured writer."
@@ -285,7 +291,7 @@ class LakebaseForeachWriter:
                 except Exception:
                     pass
 
-        logging.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
+        logger.info(f"[{self.partition_id}|{self.epoch_id}] Writer closed")
 
     def _worker(self):
         """Background worker that processes queue and flushes batches."""
@@ -311,7 +317,7 @@ class LakebaseForeachWriter:
                 time.sleep(0.0001)  # 100us sleep
 
             except Exception as e:
-                logging.error(f"Worker error: {e}")
+                logger.error(f"Worker error: {e}")
                 self.worker_error = str(e)
                 break
 
@@ -340,7 +346,7 @@ class LakebaseForeachWriter:
             self.last_flush = time.time()
 
             perf_time = (time.time() - perf_start) * 1000
-            logging.info(
+            logger.info(
                 f"[{self.partition_id}|{self.epoch_id}] Flushed {batch_size} rows in {perf_time:.1f}ms"
             )
 
@@ -360,11 +366,11 @@ class LakebaseForeachWriter:
             pass
         try:
             self.conn = psycopg.connect(**self.conn_params)
-            logging.info(
+            logger.info(
                 f"[{self.partition_id}|{self.epoch_id}] Reconnected to database"
             )
         except Exception as e:
-            logging.error(
+            logger.error(
                 f"[{self.partition_id}|{self.epoch_id}] Reconnect failed: {e}"
             )
             raise
@@ -381,7 +387,7 @@ class LakebaseForeachWriter:
                 if attempt == self.max_retries:
                     raise
                 delay = self.retry_base_delay_s * (2**attempt)
-                logging.warning(
+                logger.warning(
                     f"[{self.partition_id}|{self.epoch_id}] Flush attempt {attempt + 1} failed: {e}. "
                     f"Retrying in {delay:.1f}s..."
                 )
