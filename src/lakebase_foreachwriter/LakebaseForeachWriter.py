@@ -1,5 +1,6 @@
 import logging
 import queue
+import sys
 import threading
 import time
 from collections.abc import Sequence
@@ -201,6 +202,18 @@ class LakebaseForeachWriter:
         try:
             self.partition_id = partition_id
             self.epoch_id = epoch_id
+
+            # Configure logging for this executor worker process.
+            # Without this, logging.info() calls are silently dropped
+            # because Python's root logger defaults to WARNING level.
+            # force=True is required because the root logger may already
+            # be configured by Spark's Python worker bootstrap.
+            logging.basicConfig(
+                level=logging.INFO,
+                stream=sys.stderr,
+                force=True,
+                format="%(asctime)s %(levelname)s %(name)s %(message)s",
+            )
 
             # Connect to database
             self.conn = psycopg.connect(**self.conn_params)
