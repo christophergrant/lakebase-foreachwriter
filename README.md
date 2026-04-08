@@ -115,12 +115,13 @@ writer = LakebaseForeachWriter(
 
 **Note:** If the same primary key can arrive from multiple Spark partitions, repartition
 upstream before `writeStream.foreach(writer)` so conflicting keys stay on the same
-partition and reduce the risk of PostgreSQL deadlocks. If you are running in Databricks
-real-time mode, also set `spark.sql.execution.sortBeforeRepartition` to `false` before
-calling `repartition`, per the Databricks real-time mode repartition guidance.
+partition and reduce the risk of PostgreSQL deadlocks. If you are using Structured
+Streaming real-time mode, also set `spark.sql.execution.sortBeforeRepartition` to
+`false` before calling `repartition`; see the Databricks
+[repartition guidance](https://docs.databricks.com/gcp/en/structured-streaming/real-time/examples#repartition).
 
 ```python
-spark.conf.set("spark.sql.execution.sortBeforeRepartition", "false")  # Required for Databricks real-time mode
+spark.conf.set("spark.sql.execution.sortBeforeRepartition", "false")  # Only required when using real-time mode
 streaming_df = streaming_df.repartition(*writer.primary_keys)
 ```
 
