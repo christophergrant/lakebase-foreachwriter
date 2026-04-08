@@ -111,7 +111,17 @@ writer = LakebaseForeachWriter(
     batch_size=1000,
     batch_interval_ms=100,
 )
+```
 
+**Note:** If the same primary key can arrive from multiple Spark partitions, repartition
+upstream before `writeStream.foreach(writer)` so conflicting keys stay on the same
+partition and reduce the risk of PostgreSQL deadlocks.
+
+```python
+streaming_df = streaming_df.repartition(*writer.primary_keys)
+```
+
+```python
 query = (
     streaming_df.writeStream
     .foreach(writer)
