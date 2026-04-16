@@ -93,6 +93,9 @@ def _build_conn_params(
 
 
 def oauth_credential_provider(
+    lakebase_name: str,
+    branch_id: str = "main",
+    endpoint_id: str = "default",
     workspace_client: WorkspaceClient | None = None,
 ) -> Callable[[], tuple[str, str]]:
     """Create a credential provider that generates fresh OAuth tokens from the Databricks SDK.
@@ -100,9 +103,15 @@ def oauth_credential_provider(
     Returns a callable that produces (username, password) on each invocation,
     with token caching to avoid unnecessary round-trips.
 
+    Args:
+        lakebase_name: Lakebase project ID (e.g. "my-lakebase").
+        branch_id: Branch name (default: "main").
+        endpoint_id: Endpoint name (default: "default").
+        workspace_client: Optional pre-configured WorkspaceClient.
+
     Usage:
         writer = LakebaseForeachWriter(
-            credential_provider=oauth_credential_provider(),
+            credential_provider=oauth_credential_provider("my_lakebase"),
             table="my_table",
             df=streaming_df,
             lakebase_name="my_lakebase",
@@ -112,6 +121,7 @@ def oauth_credential_provider(
     _cached_token: str | None = None
     _cached_user: str | None = None
     _expires_at: float = 0
+    endpoint_path = f"projects/{lakebase_name}/branches/{branch_id}/endpoints/{endpoint_id}"
 
     def _provide() -> tuple[str, str]:
         nonlocal _cached_token, _cached_user, _expires_at
@@ -126,7 +136,7 @@ def oauth_credential_provider(
             me = ws.current_user.me()
             _cached_user = me.user_name or me.application_id
 
-            cred = ws.postgres.generate_database_credential()
+            cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
             _cached_token = cred.password
             # Refresh 5 minutes before the 60-minute expiry
             _expires_at = now + 55 * 60
