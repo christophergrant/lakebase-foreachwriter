@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import psycopg
 from databricks.sdk import WorkspaceClient
@@ -92,6 +92,51 @@ def _build_conn_params(
     }
 
 
+def oauth_credential_provider(
+    workspace_client: WorkspaceClient | None = None,
+) -> Callable[[], tuple[str, str]]:
+    """Create a credential provider that generates fresh OAuth tokens from the Databricks SDK.
+
+    Returns a callable that produces (username, password) on each invocation,
+    with token caching to avoid unnecessary round-trips.
+
+    Usage:
+        writer = LakebaseForeachWriter(
+            credential_provider=oauth_credential_provider(),
+            table="my_table",
+            df=streaming_df,
+            lakebase_name="my_lakebase",
+        )
+    """
+    _lock = threading.Lock()
+    _cached_token: str | None = None
+    _cached_user: str | None = None
+    _expires_at: float = 0
+
+    def _provide() -> tuple[str, str]:
+        nonlocal _cached_token, _cached_user, _expires_at
+
+        with _lock:
+            now = time.time()
+            if _cached_token and _cached_user and now < _expires_at:
+                return _cached_user, _cached_token
+
+            ws = workspace_client or WorkspaceClient(config=Config())
+
+            me = ws.current_user.me()
+            _cached_user = me.user_name or me.application_id
+
+            cred = ws.postgres.generate_database_credential()
+            _cached_token = cred.password
+            # Refresh 5 minutes before the 60-minute expiry
+            _expires_at = now + 55 * 60
+
+            logger.info("Refreshed OAuth database credential")
+            return _cached_user, _cached_token
+
+    return _provide
+
+
 class LakebaseForeachWriter:
     """
     Writes streaming Spark DataFrames to a Lakebase database efficiently.
@@ -130,10 +175,11 @@ class LakebaseForeachWriter:
 
     def __init__(
         self,
-        username: str,
-        password: str,
         table: str,
         df: DataFrame,
+        username: str | None = None,
+        password: str | None = None,
+        credential_provider: Callable[[], tuple[str, str]] | None = None,
         lakebase_name: str | None = None,
         host: str | None = None,
         sslmode: str | None = None,
@@ -145,6 +191,11 @@ class LakebaseForeachWriter:
         max_retries: int = 3,
         retry_base_delay_s: float = 0.5,
     ):
+        if not credential_provider and not (username and password):
+            raise ValueError(
+                "Either credential_provider or both username and password must be provided"
+            )
+
         # validate unsupported types
         unsupported = self._find_unsupported_fields(df.schema)
         if unsupported:
@@ -153,8 +204,9 @@ class LakebaseForeachWriter:
                 "Please convert complex types to supported formats first."
             )
 
-        self.username = username
-        self.password = password
+        self.credential_provider = credential_provider
+        self.username = username or ""
+        self.password = password or ""
         self.table = table
         self.mode = mode.lower()
         self.columns = df.schema.names
@@ -165,10 +217,14 @@ class LakebaseForeachWriter:
         self.max_retries = max_retries
         self.retry_base_delay_s = retry_base_delay_s
 
+        # Resolve initial credentials
+        if self.credential_provider:
+            self.username, self.password = self.credential_provider()
+
         # Initialize connection parameters
         self.conn_params = _build_conn_params(
-            user=username,
-            password=password,
+            user=self.username,
+            password=self.password,
             lakebase_name=lakebase_name,
             host=host,
             sslmode=sslmode,
@@ -199,6 +255,13 @@ class LakebaseForeachWriter:
         self.total_batches_flushed = 0
         self.sql = self._build_sql()
 
+    def _refresh_credentials(self):
+        """Refresh credentials from provider and update conn_params."""
+        if self.credential_provider:
+            self.username, self.password = self.credential_provider()
+            self.conn_params["user"] = self.username
+            self.conn_params["password"] = self.password
+
     def open(self, partition_id: int, epoch_id: int) -> bool:
         """Open database connection and start background worker."""
         try:
@@ -219,6 +282,9 @@ class LakebaseForeachWriter:
                 logger.addHandler(handler)
                 logger.propagate = False
             logger.setLevel(logging.INFO)
+
+            # Refresh credentials before connecting (handles OAuth token expiry)
+            self._refresh_credentials()
 
             # Connect to database
             self.conn = psycopg.connect(**self.conn_params)
@@ -365,6 +431,7 @@ class LakebaseForeachWriter:
         except Exception:
             pass
         try:
+            self._refresh_credentials()
             self.conn = psycopg.connect(**self.conn_params)
             logger.info(
                 f"[{self.partition_id}|{self.epoch_id}] Reconnected to database"
