@@ -117,32 +117,38 @@ def oauth_credential_provider(
             lakebase_name="my_lakebase",
         )
     """
-    _lock = threading.Lock()
-    _cached_token: str | None = None
-    _cached_user: str | None = None
-    _expires_at: float = 0
+    # Store only serializable state — no locks, no clients.
+    # The lock and client are created lazily per-executor after deserialization.
+    _state = {
+        "token": None,
+        "user": None,
+        "expires_at": 0.0,
+        "lock": None,
+    }
     endpoint_path = f"projects/{lakebase_name}/branches/{branch_id}/endpoints/{endpoint_id}"
 
     def _provide() -> tuple[str, str]:
-        nonlocal _cached_token, _cached_user, _expires_at
+        # Lazily create the lock (not serializable, so recreated per executor)
+        if _state["lock"] is None:
+            _state["lock"] = threading.Lock()
 
-        with _lock:
+        with _state["lock"]:
             now = time.time()
-            if _cached_token and _cached_user and now < _expires_at:
-                return _cached_user, _cached_token
+            if _state["token"] and _state["user"] and now < _state["expires_at"]:
+                return _state["user"], _state["token"]
 
             ws = workspace_client or WorkspaceClient(config=Config())
 
             me = ws.current_user.me()
-            _cached_user = me.user_name or me.application_id
+            _state["user"] = me.user_name or me.application_id
 
             cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
-            _cached_token = cred.token
+            _state["token"] = cred.token
             # Refresh 5 minutes before the 60-minute expiry
-            _expires_at = now + 55 * 60
+            _state["expires_at"] = now + 55 * 60
 
             logger.info("Refreshed OAuth database credential")
-            return _cached_user, _cached_token
+            return _state["user"], _state["token"]
 
     return _provide
 
