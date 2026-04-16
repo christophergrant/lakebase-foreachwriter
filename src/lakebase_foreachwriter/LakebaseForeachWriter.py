@@ -117,38 +117,29 @@ def oauth_credential_provider(
             lakebase_name="my_lakebase",
         )
     """
-    # Store only serializable state — no locks, no clients.
-    # The lock and client are created lazily per-executor after deserialization.
-    _state = {
-        "token": None,
-        "user": None,
-        "expires_at": 0.0,
-        "lock": None,
-    }
+    # Only serializable state — no locks, no clients.
+    # Each Spark executor gets its own deserialized copy, so no shared-state
+    # concurrency concern. Credentials are refreshed per-executor as needed.
+    _cached: list = [None, None, 0.0]  # [user, token, expires_at]
     endpoint_path = f"projects/{lakebase_name}/branches/{branch_id}/endpoints/{endpoint_id}"
 
     def _provide() -> tuple[str, str]:
-        # Lazily create the lock (not serializable, so recreated per executor)
-        if _state["lock"] is None:
-            _state["lock"] = threading.Lock()
+        now = time.time()
+        if _cached[0] and _cached[1] and now < _cached[2]:
+            return _cached[0], _cached[1]
 
-        with _state["lock"]:
-            now = time.time()
-            if _state["token"] and _state["user"] and now < _state["expires_at"]:
-                return _state["user"], _state["token"]
+        ws = workspace_client or WorkspaceClient(config=Config())
 
-            ws = workspace_client or WorkspaceClient(config=Config())
+        me = ws.current_user.me()
+        _cached[0] = me.user_name or me.application_id
 
-            me = ws.current_user.me()
-            _state["user"] = me.user_name or me.application_id
+        cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
+        _cached[1] = cred.token
+        # Refresh 5 minutes before the 60-minute expiry
+        _cached[2] = now + 55 * 60
 
-            cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
-            _state["token"] = cred.token
-            # Refresh 5 minutes before the 60-minute expiry
-            _state["expires_at"] = now + 55 * 60
-
-            logger.info("Refreshed OAuth database credential")
-            return _state["user"], _state["token"]
+        logger.info("Refreshed OAuth database credential")
+        return _cached[0], _cached[1]
 
     return _provide
 
