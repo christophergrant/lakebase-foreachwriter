@@ -137,7 +137,7 @@ def oauth_credential_provider(
             _cached_user = me.user_name or me.application_id
 
             cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
-            _cached_token = cred.password
+            _cached_token = cred.token
             # Refresh 5 minutes before the 60-minute expiry
             _expires_at = now + 55 * 60
 
