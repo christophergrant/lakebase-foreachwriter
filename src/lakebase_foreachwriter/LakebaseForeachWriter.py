@@ -8,10 +8,8 @@ from collections.abc import Callable, Sequence
 import psycopg
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
-from databricks.sdk.errors import NotFound
 from pyspark.sql import DataFrame, Row
 from pyspark.sql.types import ArrayType, MapType, StructType
-
 
 logger = logging.getLogger("lakebase_foreachwriter")
 
@@ -94,8 +92,9 @@ def _build_conn_params(
 
 def oauth_credential_provider(
     lakebase_name: str,
-    branch_id: str = "main",
-    endpoint_id: str = "default",
+    branch_id: str = "production",
+    endpoint_id: str = "primary",
+    workspace_config: dict[str, object] | None = None,
     workspace_client: WorkspaceClient | None = None,
 ) -> Callable[[], tuple[str, str]]:
     """Create a credential provider that generates fresh OAuth tokens from the Databricks SDK.
@@ -105,9 +104,9 @@ def oauth_credential_provider(
 
     Args:
         lakebase_name: Lakebase project ID (e.g. "my-lakebase").
-        branch_id: Branch name (default: "main").
-        endpoint_id: Endpoint name (default: "default").
-        workspace_client: Optional pre-configured WorkspaceClient.
+        branch_id: Branch name (default: "production").
+        endpoint_id: Endpoint name (default: "primary").
+        workspace_config: Optional keyword arguments for Databricks SDK Config.
 
     Usage:
         writer = LakebaseForeachWriter(
@@ -117,29 +116,57 @@ def oauth_credential_provider(
             lakebase_name="my_lakebase",
         )
     """
+    if workspace_client is not None:
+        raise ValueError(
+            "workspace_client is not supported because credential providers must "
+            "be Spark-serializable. Pass serializable workspace_config values instead."
+        )
+
     # Only serializable state — no locks, no clients.
     # Each Spark executor gets its own deserialized copy, so no shared-state
     # concurrency concern. Credentials are refreshed per-executor as needed.
-    _cached: list = [None, None, 0.0]  # [user, token, expires_at]
-    endpoint_path = f"projects/{lakebase_name}/branches/{branch_id}/endpoints/{endpoint_id}"
+    cache: dict[str, object] = {"user": None, "token": None, "expires_at": 0.0}
+    config_kwargs = dict(workspace_config or {})
+    endpoint_path = (
+        f"projects/{lakebase_name}/branches/{branch_id}/endpoints/{endpoint_id}"
+    )
 
     def _provide() -> tuple[str, str]:
         now = time.time()
-        if _cached[0] and _cached[1] and now < _cached[2]:
-            return _cached[0], _cached[1]
+        cached_user = cache["user"]
+        cached_token = cache["token"]
+        cached_expires_at = cache["expires_at"]
+        if (
+            isinstance(cached_user, str)
+            and isinstance(cached_token, str)
+            and isinstance(cached_expires_at, float)
+            and now < cached_expires_at
+        ):
+            return cached_user, cached_token
 
-        ws = workspace_client or WorkspaceClient(config=Config())
+        ws = WorkspaceClient(config=Config(**config_kwargs))
 
         me = ws.current_user.me()
-        _cached[0] = me.user_name or me.application_id
+        user = me.user_name
+        if not user:
+            application_id = getattr(me, "application_id", None)
+            if isinstance(application_id, str):
+                user = application_id
+        if not user:
+            raise ValueError("Could not determine current Databricks user name")
 
         cred = ws.postgres.generate_database_credential(endpoint=endpoint_path)
-        _cached[1] = cred.token
+        if not cred.token:
+            raise ValueError("Databricks SDK returned an empty database credential")
+
+        token = cred.token
+        cache["user"] = user
+        cache["token"] = token
         # Refresh 5 minutes before the 60-minute expiry
-        _cached[2] = now + 55 * 60
+        cache["expires_at"] = now + 55 * 60
 
         logger.info("Refreshed OAuth database credential")
-        return _cached[0], _cached[1]
+        return user, token
 
     return _provide
 
@@ -182,10 +209,11 @@ class LakebaseForeachWriter:
 
     def __init__(
         self,
-        table: str,
-        df: DataFrame,
         username: str | None = None,
         password: str | None = None,
+        table: str | None = None,
+        df: DataFrame | None = None,
+        *,
         credential_provider: Callable[[], tuple[str, str]] | None = None,
         lakebase_name: str | None = None,
         host: str | None = None,
@@ -198,6 +226,9 @@ class LakebaseForeachWriter:
         max_retries: int = 3,
         retry_base_delay_s: float = 0.5,
     ):
+        if table is None or df is None:
+            raise ValueError("Both table and df must be provided")
+
         if not credential_provider and not (username and password):
             raise ValueError(
                 "Either credential_provider or both username and password must be provided"
@@ -223,10 +254,6 @@ class LakebaseForeachWriter:
         self.max_queue_size = max_queue_size
         self.max_retries = max_retries
         self.retry_base_delay_s = retry_base_delay_s
-
-        # Resolve initial credentials
-        if self.credential_provider:
-            self.username, self.password = self.credential_provider()
 
         # Initialize connection parameters
         self.conn_params = _build_conn_params(

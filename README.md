@@ -62,7 +62,7 @@ If you prefer vendoring the source into a notebook or repo instead of installing
 The examples below assume:
 
 ```python
-from lakebase_foreachwriter import LakebaseForeachWriter
+from lakebase_foreachwriter import LakebaseForeachWriter, oauth_credential_provider
 
 streaming_df = ...
 LAKEBASE_USER = "your-username"
@@ -158,9 +158,28 @@ query = (
 )
 ```
 
+### Example 4: OAuth credential provider
+
+Use `oauth_credential_provider` when you want the Databricks SDK to generate
+fresh Lakebase OAuth database credentials. By default it targets the Lakebase
+`production` branch and `primary` read-write endpoint.
+
+```python
+writer = LakebaseForeachWriter(
+    credential_provider=oauth_credential_provider(LAKEBASE_NAME),
+    table="public.events",
+    df=streaming_df,
+    lakebase_name=LAKEBASE_NAME,
+    mode="insert",
+    batch_size=1000,
+    batch_interval_ms=100,
+)
+```
+
 ## Key Parameters
 
 - `username`, `password`: Database credentials. For production, prefer a dedicated database role or service principal-style account rather than an individual user.
+- `credential_provider`: Optional callable returning `(username, password)`. When provided, the writer refreshes credentials before opening or reconnecting a database connection. Use this instead of static credentials for Databricks SDK-generated OAuth database tokens.
 - `table`: Target table name. `schema.table` is supported.
 - `df`: The DataFrame whose schema is used to build SQL and validate supported types.
 - `host`: Direct read-write DNS name for the target Lakebase/Postgres endpoint.
@@ -183,7 +202,7 @@ You must provide either `host` or `lakebase_name`.
 - `upsert` is the safer mode when you need idempotent outcomes and have stable primary keys.
 - `bulk-insert` maximizes throughput, but it is still append-only. It does not deduplicate rows.
 - If you pass `host`, the writer does not need to call Databricks APIs. If you pass `lakebase_name`, the host lookup is cached for the life of the process.
-- The writer does not support native OAuth token refresh for database credentials.
+- If you pass `credential_provider`, credentials are refreshed before connection open and reconnect. The built-in OAuth provider caches tokens per Spark executor and refreshes before expiry.
 
 ## Tuning
 
@@ -195,7 +214,7 @@ You must provide either `host` or `lakebase_name`.
 
 ## Operational Notes
 
-Using a dedicated database login is recommended because the writer currently expects a stable username/password pair. For example:
+For static credentials, using a dedicated database login is recommended. For example:
 
 ```sql
 CREATE ROLE "serviceprincipal"

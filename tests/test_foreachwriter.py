@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from databricks.sdk.errors.platform import NotFound
+from pyspark import cloudpickle
 from pyspark.sql import Row
 from pyspark.sql.types import (
     ArrayType,
@@ -20,6 +21,7 @@ from lakebase_foreachwriter import LakebaseForeachWriter
 from lakebase_foreachwriter.LakebaseForeachWriter import (
     _build_conn_params,
     _host_cache,
+    oauth_credential_provider,
 )
 
 
@@ -138,6 +140,101 @@ class TestLakebaseForeachWriter:
 
         with pytest.raises(ValueError, match="Unsupported field types found"):
             LakebaseForeachWriter("user", "pass", "table", df, host="localhost")
+
+    def test_init_supports_existing_positional_order(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            "user",
+            "pass",
+            "table",
+            mock_dataframe,
+            host="localhost",
+        )
+
+        assert writer.username == "user"
+        assert writer.password == "pass"
+        assert writer.table == "table"
+        assert writer.columns == ["id", "name"]
+
+    def test_init_supports_credential_provider_without_static_password(
+        self, mock_dataframe
+    ):
+        provider = Mock(return_value=("oauth_user", "oauth_token"))
+
+        writer = LakebaseForeachWriter(
+            credential_provider=provider,
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+        )
+
+        provider.assert_not_called()
+        assert writer.conn_params["user"] == ""
+        assert writer.conn_params["password"] == ""
+
+        writer._refresh_credentials()
+
+        provider.assert_called_once_with()
+        assert writer.conn_params["user"] == "oauth_user"
+        assert writer.conn_params["password"] == "oauth_token"
+
+    @patch("psycopg.connect")
+    def test_open_refreshes_credential_provider(self, mock_connect, mock_dataframe):
+        provider = Mock(return_value=("oauth_user", "oauth_token"))
+        writer = LakebaseForeachWriter(
+            credential_provider=provider,
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+        )
+        mock_connect.return_value = Mock()
+
+        assert writer.open(0, 0) is True
+
+        provider.assert_called_once_with()
+        mock_connect.assert_called_once()
+        assert mock_connect.call_args.kwargs["user"] == "oauth_user"
+        assert mock_connect.call_args.kwargs["password"] == "oauth_token"
+
+        assert writer.stop_event is not None
+        assert writer.worker_thread is not None
+        writer.stop_event.set()
+        writer.worker_thread.join(timeout=5)
+
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.Config")
+    @patch("lakebase_foreachwriter.LakebaseForeachWriter.WorkspaceClient")
+    def test_oauth_credential_provider_defaults_to_production_primary(
+        self, mock_ws_client, mock_config
+    ):
+        mock_user = Mock()
+        mock_user.user_name = "oauth_user"
+        mock_user.application_id = None
+        mock_cred = Mock()
+        mock_cred.token = "oauth_token"
+
+        mock_instance = Mock()
+        mock_instance.current_user.me.return_value = mock_user
+        mock_instance.postgres.generate_database_credential.return_value = mock_cred
+        mock_ws_client.return_value = mock_instance
+
+        provider = oauth_credential_provider("test-project")
+
+        assert provider() == ("oauth_user", "oauth_token")
+        mock_config.assert_called_once_with()
+        mock_instance.postgres.generate_database_credential.assert_called_once_with(
+            endpoint="projects/test-project/branches/production/endpoints/primary"
+        )
+
+    def test_oauth_credential_provider_is_spark_serializable(self):
+        provider = oauth_credential_provider(
+            "test-project",
+            workspace_config={"profile": "test-profile"},
+        )
+
+        cloudpickle.dumps(provider)
+
+    def test_oauth_credential_provider_rejects_workspace_client(self):
+        with pytest.raises(ValueError, match="Spark-serializable"):
+            oauth_credential_provider("test-project", workspace_client=Mock())
 
     def test_find_unsupported_fields(self):
         schema = StructType(
