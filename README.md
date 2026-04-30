@@ -134,6 +134,26 @@ query = (
 )
 ```
 
+For event streams where late rows can arrive out of order, use
+`upsert_version_column` to update only from newer events. The default
+`upsert_version_null_policy` updates non-version columns when the incoming
+version is `NULL`, but preserves the existing version value.
+
+```python
+writer = LakebaseForeachWriter(
+    username=LAKEBASE_USER,
+    password=LAKEBASE_PASSWORD,
+    table="public.withdrawals",
+    df=streaming_df,
+    host=LAKEBASE_HOST,
+    mode="upsert",
+    primary_keys=["id"],
+    upsert_version_column="lastupdatedat",
+    upsert_null_value_policy="overwrite",
+    upsert_version_null_policy="update_keep_existing",
+)
+```
+
 ### Example 3: `bulk-insert` mode
 
 `bulk-insert` uses PostgreSQL `COPY` and is the highest-throughput option when you only need append behavior.
@@ -187,6 +207,9 @@ writer = LakebaseForeachWriter(
 - `sslmode`: Passed through to `psycopg`. Defaults to `require`. When connecting to local Postgres on `localhost` or `127.0.0.1`, the writer defaults to `disable`.
 - `mode`: One of `insert`, `upsert`, or `bulk-insert`.
 - `primary_keys`: Required for `upsert`. These columns define the `ON CONFLICT` target.
+- `upsert_version_column`: Optional column used to apply `upsert` updates only when the incoming row is newer than the existing row. When set, updates are applied when the incoming version is greater than the existing version, when the existing version is `NULL`, or according to `upsert_version_null_policy` when the incoming version is `NULL`.
+- `upsert_null_value_policy`: Controls incoming `NULL` values for non-primary-key columns in `upsert` mode. Use `overwrite` to write incoming `NULL` values to the table, or `preserve_existing` to keep existing values when incoming values are `NULL`. Defaults to `overwrite`.
+- `upsert_version_null_policy`: Controls incoming `NULL` values for `upsert_version_column`. Use `update_keep_existing` to update other columns while preserving the existing version, `skip_update` to ignore incoming rows with a `NULL` version, or `overwrite` to write `NULL` to the version column. Defaults to `update_keep_existing`.
 - `batch_size`: Flush after this many rows.
 - `batch_interval_ms`: Flush after this amount of time even if the batch is not full.
 - `max_queue_size`: In-memory queue size between Spark's `process()` calls and the background flush thread.
@@ -200,6 +223,7 @@ You must provide either `host` or `lakebase_name`.
 - The writer expects the target table to already exist.
 - The sink behaves effectively as at-least-once. On replay, restart, or retry, `insert` can produce duplicates.
 - `upsert` is the safer mode when you need idempotent outcomes and have stable primary keys.
+- If `upsert_version_column` is set, older or equal-version rows do not update existing rows. With the default `upsert_version_null_policy`, rows whose version is `NULL` still update other columns, but the existing version value is preserved.
 - `bulk-insert` maximizes throughput, but it is still append-only. It does not deduplicate rows.
 - If you pass `host`, the writer does not need to call Databricks APIs. If you pass `lakebase_name`, the host lookup is cached for the life of the process.
 - If you pass `credential_provider`, credentials are refreshed before connection open and reconnect. The built-in OAuth provider caches tokens per Spark executor and refreshes before expiry.
