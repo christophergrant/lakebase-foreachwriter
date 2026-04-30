@@ -138,8 +138,7 @@ def test_versioned_upsert_overwrites_null_values_and_preserves_null_version(
     t2 = datetime(2024, 1, 3, 12, 0, 0)
     options = {
         "upsert_version_column": "lastupdatedat",
-        "upsert_null_value_policy": "overwrite",
-        "upsert_version_null_policy": "update_keep_existing",
+        "upsert_coalesce_columns": ["lastupdatedat"],
     }
 
     write_rows(
@@ -190,7 +189,7 @@ def test_versioned_upsert_overwrites_null_values_and_preserves_null_version(
     assert read_row(local_pg_connection, local_pg_table) == (1, "settled", "5678", t2)
 
 
-def test_upsert_preserve_existing_null_value_policy(
+def test_upsert_coalesce_columns_preserve_existing_null_values(
     local_pg_connection, local_pg_table
 ):
     schema = writer_schema()
@@ -198,8 +197,7 @@ def test_upsert_preserve_existing_null_value_policy(
     t2 = datetime(2024, 1, 3, 12, 0, 0)
     options = {
         "upsert_version_column": "lastupdatedat",
-        "upsert_null_value_policy": "preserve_existing",
-        "upsert_version_null_policy": "update_keep_existing",
+        "upsert_coalesce_columns": ["paymentmethodlastdigits", "lastupdatedat"],
     }
 
     write_rows(

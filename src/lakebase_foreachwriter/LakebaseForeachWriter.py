@@ -14,12 +14,6 @@ from pyspark.sql.types import ArrayType, MapType, StructType
 logger = logging.getLogger("lakebase_foreachwriter")
 
 _host_cache: dict[str, str] = {}
-_UPSERT_NULL_VALUE_POLICIES = {"overwrite", "preserve_existing"}
-_UPSERT_VERSION_NULL_POLICIES = {
-    "update_keep_existing",
-    "skip_update",
-    "overwrite",
-}
 
 
 def _resolve_host(ws: WorkspaceClient, lakebase_name: str) -> str:
@@ -227,8 +221,7 @@ class LakebaseForeachWriter:
         mode: str = "insert",
         primary_keys: Sequence[str] | None = None,
         upsert_version_column: str | None = None,
-        upsert_null_value_policy: str = "overwrite",
-        upsert_version_null_policy: str = "update_keep_existing",
+        upsert_coalesce_columns: Sequence[str] | str | None = None,
         batch_size: int = 1000,
         batch_interval_ms: int = 100,
         max_queue_size: int = 10_000,
@@ -259,8 +252,10 @@ class LakebaseForeachWriter:
         self.columns = df.schema.names
         self.primary_keys = primary_keys if primary_keys else []
         self.upsert_version_column = upsert_version_column
-        self.upsert_null_value_policy = upsert_null_value_policy.lower()
-        self.upsert_version_null_policy = upsert_version_null_policy.lower()
+        if isinstance(upsert_coalesce_columns, str):
+            self.upsert_coalesce_columns = [upsert_coalesce_columns]
+        else:
+            self.upsert_coalesce_columns = list(upsert_coalesce_columns or [])
         self.batch_size = batch_size
         self.batch_interval_ms = batch_interval_ms
         self.max_queue_size = max_queue_size
@@ -564,26 +559,6 @@ class LakebaseForeachWriter:
             raise ValueError(f"Invalid mode: {self.mode}")
 
     def _validate_upsert_options(self) -> None:
-        if self.upsert_null_value_policy not in _UPSERT_NULL_VALUE_POLICIES:
-            raise ValueError(
-                "upsert_null_value_policy must be one of: "
-                f"{', '.join(sorted(_UPSERT_NULL_VALUE_POLICIES))}"
-            )
-
-        if self.upsert_version_null_policy not in _UPSERT_VERSION_NULL_POLICIES:
-            raise ValueError(
-                "upsert_version_null_policy must be one of: "
-                f"{', '.join(sorted(_UPSERT_VERSION_NULL_POLICIES))}"
-            )
-
-        if (
-            self.upsert_version_column is None
-            and self.upsert_version_null_policy != "update_keep_existing"
-        ):
-            raise ValueError(
-                "upsert_version_null_policy requires upsert_version_column"
-            )
-
         if self.upsert_version_column is not None:
             if self.upsert_version_column not in self.columns:
                 raise ValueError(
@@ -593,15 +568,26 @@ class LakebaseForeachWriter:
             if self.upsert_version_column in self.primary_keys:
                 raise ValueError("upsert_version_column cannot be a primary key")
 
-    def _build_upsert_assignment(self, column: str, target_alias: str) -> str:
-        if column == self.upsert_version_column:
-            if self.upsert_version_null_policy == "update_keep_existing":
-                return (
-                    f"{column} = COALESCE(EXCLUDED.{column}, {target_alias}.{column})"
-                )
-            return f"{column} = EXCLUDED.{column}"
+        invalid_coalesce_columns = [
+            c for c in self.upsert_coalesce_columns if c not in self.columns
+        ]
+        if invalid_coalesce_columns:
+            raise ValueError(
+                "upsert_coalesce_columns contains columns that are not present "
+                f"in the DataFrame schema: {', '.join(invalid_coalesce_columns)}"
+            )
 
-        if self.upsert_null_value_policy == "preserve_existing":
+        primary_key_coalesce_columns = [
+            c for c in self.upsert_coalesce_columns if c in self.primary_keys
+        ]
+        if primary_key_coalesce_columns:
+            raise ValueError(
+                "upsert_coalesce_columns cannot include primary key columns: "
+                f"{', '.join(primary_key_coalesce_columns)}"
+            )
+
+    def _build_upsert_assignment(self, column: str, target_alias: str) -> str:
+        if column in self.upsert_coalesce_columns:
             return f"{column} = COALESCE(EXCLUDED.{column}, {target_alias}.{column})"
 
         return f"{column} = EXCLUDED.{column}"
@@ -611,11 +597,6 @@ class LakebaseForeachWriter:
             return ""
 
         column = self.upsert_version_column
-        if self.upsert_version_null_policy == "skip_update":
-            return f"""WHERE EXCLUDED.{column} IS NOT NULL
-                  AND ({target_alias}.{column} IS NULL
-                       OR EXCLUDED.{column} > {target_alias}.{column})"""
-
         return f"""WHERE EXCLUDED.{column} IS NULL
                    OR {target_alias}.{column} IS NULL
                    OR EXCLUDED.{column} > {target_alias}.{column}"""

@@ -277,10 +277,10 @@ class TestLakebaseForeachWriter:
             """
         assert normalize_sql(sql) == normalize_sql(expected)
 
-    def test_build_sql_upsert_preserve_existing_nulls(self, writer):
+    def test_build_sql_upsert_coalesce_columns(self, writer):
         writer.mode = "upsert"
         writer.primary_keys = ["id"]
-        writer.upsert_null_value_policy = "preserve_existing"
+        writer.upsert_coalesce_columns = ["name"]
 
         sql = writer._build_sql()
 
@@ -296,8 +296,7 @@ class TestLakebaseForeachWriter:
         writer.columns = ["id", "name", "paymentmethodlastdigits", "lastupdatedat"]
         writer.primary_keys = ["id"]
         writer.upsert_version_column = "lastupdatedat"
-        writer.upsert_null_value_policy = "overwrite"
-        writer.upsert_version_null_policy = "update_keep_existing"
+        writer.upsert_coalesce_columns = ["lastupdatedat"]
 
         sql = writer._build_sql()
 
@@ -316,12 +315,11 @@ class TestLakebaseForeachWriter:
             """
         )
 
-    def test_build_sql_upsert_version_skip_null_update(self, writer):
+    def test_build_sql_upsert_version_without_coalesce_column(self, writer):
         writer.mode = "upsert"
         writer.columns = ["id", "name", "lastupdatedat"]
         writer.primary_keys = ["id"]
         writer.upsert_version_column = "lastupdatedat"
-        writer.upsert_version_null_policy = "skip_update"
 
         sql = writer._build_sql()
 
@@ -333,59 +331,60 @@ class TestLakebaseForeachWriter:
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     lastupdatedat = EXCLUDED.lastupdatedat
-                WHERE EXCLUDED.lastupdatedat IS NOT NULL
-                  AND (lakebase_target.lastupdatedat IS NULL
-                       OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat)
+                WHERE EXCLUDED.lastupdatedat IS NULL
+                   OR lakebase_target.lastupdatedat IS NULL
+                   OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat
             """
         )
 
-    def test_build_sql_upsert_version_overwrite_null(self, writer):
+    def test_init_accepts_string_upsert_coalesce_column(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            upsert_coalesce_columns="name",
+        )
+
+        assert writer.upsert_coalesce_columns == ["name"]
+
+    def test_init_rejects_missing_upsert_coalesce_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="upsert_coalesce_columns"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                upsert_coalesce_columns=["missing"],
+            )
+
+    def test_init_rejects_primary_key_upsert_coalesce_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="cannot include primary key"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                mode="upsert",
+                primary_keys=["id"],
+                upsert_coalesce_columns=["id"],
+            )
+
+    def test_build_sql_upsert_coalesce_version_and_other_column(self, writer):
         writer.mode = "upsert"
-        writer.columns = ["id", "name", "lastupdatedat"]
+        writer.columns = ["id", "name", "lastupdatedat", "note"]
         writer.primary_keys = ["id"]
         writer.upsert_version_column = "lastupdatedat"
-        writer.upsert_version_null_policy = "overwrite"
+        writer.upsert_coalesce_columns = ["lastupdatedat", "note"]
 
         sql = writer._build_sql()
 
-        assert "lastupdatedat = EXCLUDED.lastupdatedat" in sql
-        assert "WHERE EXCLUDED.lastupdatedat IS NULL" in sql
-
-    def test_init_rejects_invalid_upsert_null_value_policy(self, mock_dataframe):
-        with pytest.raises(ValueError, match="upsert_null_value_policy"):
-            LakebaseForeachWriter(
-                username="user",
-                password="pass",
-                table="table",
-                df=mock_dataframe,
-                host="localhost",
-                upsert_null_value_policy="invalid",
-            )
-
-    def test_init_rejects_invalid_upsert_version_null_policy(self, mock_dataframe):
-        with pytest.raises(ValueError, match="upsert_version_null_policy"):
-            LakebaseForeachWriter(
-                username="user",
-                password="pass",
-                table="table",
-                df=mock_dataframe,
-                host="localhost",
-                upsert_version_column="name",
-                upsert_version_null_policy="invalid",
-            )
-
-    def test_init_rejects_version_null_policy_without_version_column(
-        self, mock_dataframe
-    ):
-        with pytest.raises(ValueError, match="upsert_version_null_policy requires"):
-            LakebaseForeachWriter(
-                username="user",
-                password="pass",
-                table="table",
-                df=mock_dataframe,
-                host="localhost",
-                upsert_version_null_policy="skip_update",
-            )
+        assert "name = EXCLUDED.name" in sql
+        assert "lastupdatedat = COALESCE(EXCLUDED.lastupdatedat" in sql
+        assert "note = COALESCE(EXCLUDED.note" in sql
 
     def test_init_rejects_missing_upsert_version_column(self, mock_dataframe):
         with pytest.raises(ValueError, match="is not present"):
@@ -653,8 +652,7 @@ class TestLakebaseForeachWriter:
         assert writer.mode == "upsert"  # Should be lowercased
         assert writer.primary_keys == ["id"]
         assert writer.upsert_version_column is None
-        assert writer.upsert_null_value_policy == "overwrite"
-        assert writer.upsert_version_null_policy == "update_keep_existing"
+        assert writer.upsert_coalesce_columns == []
         assert writer.batch_size == 500
         assert writer.batch_interval_ms == 50
         assert writer.columns == ["id", "name"]
