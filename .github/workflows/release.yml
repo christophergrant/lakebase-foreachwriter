@@ -37,4 +37,4 @@ jobs:
             dist/*.tar.gz
           body: |
             Changes in this Release:
-            - See [CHANGELOG.md](https://github.com/databricks/lakebase-foreachwriter/blob/main/CHANGELOG.md) for detailed changes
+            - See [CHANGELOG.md](https://github.com/christophergrant/lakebase-foreachwriter/blob/main/CHANGELOG.md) for detailed changes
