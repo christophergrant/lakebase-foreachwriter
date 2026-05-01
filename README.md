@@ -134,6 +134,25 @@ query = (
 )
 ```
 
+For event streams where late rows can arrive out of order, use
+`upsert_version_column` to update only from newer events. If an incoming
+`NULL` should mean "keep the existing value" for a column, add that column
+to `upsert_coalesce_columns`.
+
+```python
+writer = LakebaseForeachWriter(
+    username=LAKEBASE_USER,
+    password=LAKEBASE_PASSWORD,
+    table="public.withdrawals",
+    df=streaming_df,
+    host=LAKEBASE_HOST,
+    mode="upsert",
+    primary_keys=["id"],
+    upsert_version_column="lastupdatedat",
+    upsert_coalesce_columns=["lastupdatedat"],
+)
+```
+
 ### Example 3: `bulk-insert` mode
 
 `bulk-insert` uses PostgreSQL `COPY` and is the highest-throughput option when you only need append behavior.
@@ -187,6 +206,8 @@ writer = LakebaseForeachWriter(
 - `sslmode`: Passed through to `psycopg`. Defaults to `require`. When connecting to local Postgres on `localhost` or `127.0.0.1`, the writer defaults to `disable`.
 - `mode`: One of `insert`, `upsert`, or `bulk-insert`.
 - `primary_keys`: Required for `upsert`. These columns define the `ON CONFLICT` target.
+- `upsert_version_column`: Optional column used to apply `upsert` updates only when the incoming row is newer than the existing row. When set, updates are applied when the incoming version is greater than the existing version, when the existing version is `NULL`, or when the incoming version is `NULL`.
+- `upsert_coalesce_columns`: Optional list of non-primary-key columns where incoming `NULL` values should preserve the existing table value. Columns not listed here use normal upsert behavior, so incoming `NULL` values overwrite existing values.
 - `batch_size`: Flush after this many rows.
 - `batch_interval_ms`: Flush after this amount of time even if the batch is not full.
 - `max_queue_size`: In-memory queue size between Spark's `process()` calls and the background flush thread.
@@ -200,6 +221,7 @@ You must provide either `host` or `lakebase_name`.
 - The writer expects the target table to already exist.
 - The sink behaves effectively as at-least-once. On replay, restart, or retry, `insert` can produce duplicates.
 - `upsert` is the safer mode when you need idempotent outcomes and have stable primary keys.
+- If `upsert_version_column` is set, older or equal-version rows do not update existing rows. Rows whose version is `NULL` still update the row. Add the version column to `upsert_coalesce_columns` if incoming `NULL` versions should preserve the existing version value.
 - `bulk-insert` maximizes throughput, but it is still append-only. It does not deduplicate rows.
 - If you pass `host`, the writer does not need to call Databricks APIs. If you pass `lakebase_name`, the host lookup is cached for the life of the process.
 - If you pass `credential_provider`, credentials are refreshed before connection open and reconnect. The built-in OAuth provider caches tokens per Spark executor and refreshes before expiry.

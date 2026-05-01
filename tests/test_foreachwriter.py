@@ -25,6 +25,10 @@ from lakebase_foreachwriter.LakebaseForeachWriter import (
 )
 
 
+def normalize_sql(sql: str) -> str:
+    return " ".join(sql.split())
+
+
 class TestBuildConnParams:
     def test_with_host_provided(self):
         result = _build_conn_params("user", "pass", host="localhost")
@@ -268,10 +272,143 @@ class TestLakebaseForeachWriter:
         writer.primary_keys = ["id"]
         sql = writer._build_sql()
         expected = """
-                INSERT INTO test_table (id, name) VALUES (%s, %s)
+                INSERT INTO test_table AS lakebase_target (id, name) VALUES (%s, %s)
                 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
             """
-        assert sql.strip() == expected.strip()
+        assert normalize_sql(sql) == normalize_sql(expected)
+
+    def test_build_sql_upsert_coalesce_columns(self, writer):
+        writer.mode = "upsert"
+        writer.primary_keys = ["id"]
+        writer.upsert_coalesce_columns = ["name"]
+
+        sql = writer._build_sql()
+
+        assert normalize_sql(sql) == normalize_sql(
+            """
+                INSERT INTO test_table AS lakebase_target (id, name) VALUES (%s, %s)
+                ON CONFLICT (id) DO UPDATE SET name = COALESCE(EXCLUDED.name, lakebase_target.name)
+            """
+        )
+
+    def test_build_sql_upsert_with_version_column(self, writer):
+        writer.mode = "upsert"
+        writer.columns = ["id", "name", "paymentmethodlastdigits", "lastupdatedat"]
+        writer.primary_keys = ["id"]
+        writer.upsert_version_column = "lastupdatedat"
+        writer.upsert_coalesce_columns = ["lastupdatedat"]
+
+        sql = writer._build_sql()
+
+        assert normalize_sql(sql) == normalize_sql(
+            """
+                INSERT INTO test_table AS lakebase_target
+                    (id, name, paymentmethodlastdigits, lastupdatedat)
+                    VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    paymentmethodlastdigits = EXCLUDED.paymentmethodlastdigits,
+                    lastupdatedat = COALESCE(EXCLUDED.lastupdatedat, lakebase_target.lastupdatedat)
+                WHERE EXCLUDED.lastupdatedat IS NULL
+                   OR lakebase_target.lastupdatedat IS NULL
+                   OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat
+            """
+        )
+
+    def test_build_sql_upsert_version_without_coalesce_column(self, writer):
+        writer.mode = "upsert"
+        writer.columns = ["id", "name", "lastupdatedat"]
+        writer.primary_keys = ["id"]
+        writer.upsert_version_column = "lastupdatedat"
+
+        sql = writer._build_sql()
+
+        assert normalize_sql(sql) == normalize_sql(
+            """
+                INSERT INTO test_table AS lakebase_target
+                    (id, name, lastupdatedat)
+                    VALUES (%s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    lastupdatedat = EXCLUDED.lastupdatedat
+                WHERE EXCLUDED.lastupdatedat IS NULL
+                   OR lakebase_target.lastupdatedat IS NULL
+                   OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat
+            """
+        )
+
+    def test_init_accepts_string_upsert_coalesce_column(self, mock_dataframe):
+        writer = LakebaseForeachWriter(
+            username="user",
+            password="pass",
+            table="table",
+            df=mock_dataframe,
+            host="localhost",
+            upsert_coalesce_columns="name",
+        )
+
+        assert writer.upsert_coalesce_columns == ["name"]
+
+    def test_init_rejects_missing_upsert_coalesce_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="upsert_coalesce_columns"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                upsert_coalesce_columns=["missing"],
+            )
+
+    def test_init_rejects_primary_key_upsert_coalesce_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="cannot include primary key"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                mode="upsert",
+                primary_keys=["id"],
+                upsert_coalesce_columns=["id"],
+            )
+
+    def test_build_sql_upsert_coalesce_version_and_other_column(self, writer):
+        writer.mode = "upsert"
+        writer.columns = ["id", "name", "lastupdatedat", "note"]
+        writer.primary_keys = ["id"]
+        writer.upsert_version_column = "lastupdatedat"
+        writer.upsert_coalesce_columns = ["lastupdatedat", "note"]
+
+        sql = writer._build_sql()
+
+        assert "name = EXCLUDED.name" in sql
+        assert "lastupdatedat = COALESCE(EXCLUDED.lastupdatedat" in sql
+        assert "note = COALESCE(EXCLUDED.note" in sql
+
+    def test_init_rejects_missing_upsert_version_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="is not present"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                upsert_version_column="missing",
+            )
+
+    def test_init_rejects_primary_key_upsert_version_column(self, mock_dataframe):
+        with pytest.raises(ValueError, match="cannot be a primary key"):
+            LakebaseForeachWriter(
+                username="user",
+                password="pass",
+                table="table",
+                df=mock_dataframe,
+                host="localhost",
+                mode="upsert",
+                primary_keys=["id"],
+                upsert_version_column="id",
+            )
 
     def test_build_sql_upsert_no_primary_keys(self, writer):
         writer.mode = "upsert"
@@ -514,6 +651,8 @@ class TestLakebaseForeachWriter:
         assert writer.table == "table"
         assert writer.mode == "upsert"  # Should be lowercased
         assert writer.primary_keys == ["id"]
+        assert writer.upsert_version_column is None
+        assert writer.upsert_coalesce_columns == []
         assert writer.batch_size == 500
         assert writer.batch_interval_ms == 50
         assert writer.columns == ["id", "name"]
