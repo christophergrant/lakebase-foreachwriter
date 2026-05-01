@@ -4,12 +4,12 @@ To contribute to this project or run it in a local development environment, foll
 
 1.  **Clone the repository:**
     ```bash
-    git clone <repository-url>
+    git clone https://github.com/christophergrant/lakebase-foreachwriter.git
     cd lakebase-foreachwriter
     ```
 
 2.  **Install Python and `uv`:**
-    Ensure you have Python 3.11 or later installed. Then, install `uv`, a fast Python package installer and resolver.
+    Ensure you have Python 3.12 or later installed. Then, install `uv`, a fast Python package installer and resolver.
     ```bash
     pip install uv
     ```
@@ -26,9 +26,10 @@ To contribute to this project or run it in a local development environment, foll
     The integration tests require a live database connection. Create a `.env` file in the root of the project and add your credentials:
     ```bash
     # .env
-    LAKEBASE_USER="your-service-principal-id"
-    LAKEBASE_PASSWORD="your-service-principal-secret"
-    LAKEBASE_NAME="your-lakebase-instance-name"
+    LAKEBASE_WRITER_HOST="your-lakebase.dns.databricks.com"
+    LAKEBASE_WRITER_USER="your-service-principal-id"
+    LAKEBASE_WRITER_PASSWORD="your-service-principal-secret"
+    LAKEBASE_WRITER_LAKEBASE_NAME="your-lakebase-instance-name"
     ```
     The tests will automatically load these variables.
 
@@ -42,8 +43,8 @@ To contribute to this project or run it in a local development environment, foll
     uv run ty check src tests
 
     # Run unit tests
-    uv run pytest tests/test_writer.py
+    uv run pytest tests/test_foreachwriter.py
 
     # Run integration tests (requires .env file)
     uv run pytest tests/test_integration.py
-    ``` 
+    ```

@@ -26,10 +26,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/databricks/lakebase-foreachwriter"
-Repository = "https://github.com/databricks/lakebase-foreachwriter"
-Issues = "https://github.com/databricks/lakebase-foreachwriter/issues"
-Changelog = "https://github.com/databricks/lakebase-foreachwriter/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/christophergrant/lakebase-foreachwriter"
+Repository = "https://github.com/christophergrant/lakebase-foreachwriter"
+Issues = "https://github.com/christophergrant/lakebase-foreachwriter/issues"
+Changelog = "https://github.com/christophergrant/lakebase-foreachwriter/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
