@@ -425,6 +425,24 @@ class TestLakebaseForeachWriter:
         with pytest.raises(ValueError, match="Invalid mode: invalid"):
             writer._build_sql()
 
+    def test_build_multirow_sql_insert(self, writer):
+        writer.mode = "insert"
+        values_clause = "(%s, %s), (%s, %s)"
+        sql = writer._build_multirow_sql(values_clause)
+        assert sql == "INSERT INTO test_table (id, name) VALUES (%s, %s), (%s, %s)"
+
+    def test_build_multirow_sql_upsert(self, writer):
+        writer.mode = "upsert"
+        writer.primary_keys = ["id"]
+        values_clause = "(%s, %s), (%s, %s)"
+        sql = writer._build_multirow_sql(values_clause)
+        expected = (
+            "INSERT INTO test_table AS lakebase_target (id, name) "
+            "VALUES (%s, %s), (%s, %s) "
+            "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name "
+        )
+        assert normalize_sql(sql) == normalize_sql(expected)
+
     @patch("psycopg.connect")
     def test_open_success(self, mock_connect, writer):
         mock_conn = Mock()
@@ -496,6 +514,58 @@ class TestLakebaseForeachWriter:
         )
         mock_conn.commit.assert_called_once()
         assert writer.batch == []
+
+    @patch("psycopg.connect")
+    def test_flush_batch_multirow_insert_mode(self, mock_connect, writer):
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+        mock_cursor.__exit__ = Mock(return_value=None)
+        mock_connect.return_value = mock_conn
+
+        writer.conn = mock_conn
+        writer.batch = [(1, "test"), (2, "test2")]
+        writer.mode = "insert"
+        writer.sql = "INSERT INTO test_table (id, name) VALUES (%s, %s)"
+        writer.use_multirow_sql = True
+        writer.rows_per_sql = 100
+        writer.partition_id = 1
+        writer.epoch_id = 100
+
+        writer._flush_batch()
+
+        mock_cursor.executemany.assert_not_called()
+        mock_cursor.execute.assert_called_once()
+        call_args = mock_cursor.execute.call_args
+        assert "VALUES (%s, %s), (%s, %s)" in call_args[0][0]
+        assert call_args[0][1] == [1, "test", 2, "test2"]
+        mock_conn.commit.assert_called_once()
+        assert writer.batch == []
+
+    @patch("psycopg.connect")
+    def test_flush_batch_multirow_pages(self, mock_connect, writer):
+        mock_conn = Mock()
+        mock_cursor = Mock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.__enter__ = Mock(return_value=mock_cursor)
+        mock_cursor.__exit__ = Mock(return_value=None)
+        mock_connect.return_value = mock_conn
+
+        writer.conn = mock_conn
+        writer.batch = [(i, f"name{i}") for i in range(5)]
+        writer.mode = "insert"
+        writer.sql = "INSERT INTO test_table (id, name) VALUES (%s, %s)"
+        writer.use_multirow_sql = True
+        writer.rows_per_sql = 2
+        writer.partition_id = 1
+        writer.epoch_id = 100
+
+        writer._flush_batch()
+
+        mock_cursor.executemany.assert_not_called()
+        assert mock_cursor.execute.call_count == 3  # 2 + 2 + 1
+        mock_conn.commit.assert_called_once()
 
     @patch("psycopg.connect")
     def test_flush_batch_bulk_insert_mode(self, mock_connect, writer):
