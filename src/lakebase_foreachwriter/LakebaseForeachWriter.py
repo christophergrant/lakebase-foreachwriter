@@ -452,11 +452,15 @@ class LakebaseForeachWriter:
                     if self.use_multirow_sql:
                         num_cols = len(self.columns)
                         row_placeholder = "(" + ", ".join(["%s"] * num_cols) + ")"
-                        full_values_clause = ", ".join([row_placeholder] * self.rows_per_sql)
+                        full_values_clause = ", ".join(
+                            [row_placeholder] * self.rows_per_sql
+                        )
                         full_sql = self._build_multirow_sql(full_values_clause)
 
                         for page_start in range(0, len(self.batch), self.rows_per_sql):
-                            page = self.batch[page_start : page_start + self.rows_per_sql]
+                            page = self.batch[
+                                page_start : page_start + self.rows_per_sql
+                            ]
                             page_size = len(page)
 
                             if page_size == self.rows_per_sql:

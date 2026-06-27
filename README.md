@@ -198,6 +198,8 @@ writer = LakebaseForeachWriter(
 
 This works with both `insert` and `upsert` modes. The `bulk-insert` mode is unaffected since it already uses PostgreSQL `COPY`.
 
+**Note:** When using `use_multirow_sql=True` with `upsert` mode, duplicate primary keys within a single multi-row statement will cause PostgreSQL to reject it with `ON CONFLICT DO UPDATE command cannot affect row a second time`. This can only happen if the same key arrives twice within the same batch flush — i.e., within the `batch_interval_ms` (default 100ms) or `batch_size` (default 1000 rows) window, whichever triggers first. While this is unlikely in most streaming workloads, if your source can emit multiple updates to the same key within that window, deduplicate upstream and keep only the intended latest row per key before it reaches the writer.
+
 ### Example 5: OAuth credential provider
 
 Use `oauth_credential_provider` when you want the Databricks SDK to generate

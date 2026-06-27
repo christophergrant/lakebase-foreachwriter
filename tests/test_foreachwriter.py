@@ -443,6 +443,61 @@ class TestLakebaseForeachWriter:
         )
         assert normalize_sql(sql) == normalize_sql(expected)
 
+    def test_build_multirow_sql_upsert_coalesce_columns(self, writer):
+        writer.mode = "upsert"
+        writer.primary_keys = ["id"]
+        writer.upsert_coalesce_columns = ["name"]
+        values_clause = "(%s, %s), (%s, %s)"
+        sql = writer._build_multirow_sql(values_clause)
+        assert normalize_sql(sql) == normalize_sql(
+            """
+            INSERT INTO test_table AS lakebase_target (id, name)
+            VALUES (%s, %s), (%s, %s)
+            ON CONFLICT (id) DO UPDATE SET name = COALESCE(EXCLUDED.name, lakebase_target.name)
+            """
+        )
+
+    def test_build_multirow_sql_upsert_with_version_column(self, writer):
+        writer.mode = "upsert"
+        writer.columns = ["id", "name", "lastupdatedat"]
+        writer.primary_keys = ["id"]
+        writer.upsert_version_column = "lastupdatedat"
+        writer.upsert_coalesce_columns = ["lastupdatedat"]
+        values_clause = "(%s, %s, %s), (%s, %s, %s)"
+        sql = writer._build_multirow_sql(values_clause)
+        assert normalize_sql(sql) == normalize_sql(
+            """
+            INSERT INTO test_table AS lakebase_target (id, name, lastupdatedat)
+            VALUES (%s, %s, %s), (%s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                lastupdatedat = COALESCE(EXCLUDED.lastupdatedat, lakebase_target.lastupdatedat)
+            WHERE EXCLUDED.lastupdatedat IS NULL
+               OR lakebase_target.lastupdatedat IS NULL
+               OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat
+            """
+        )
+
+    def test_build_multirow_sql_upsert_version_without_coalesce(self, writer):
+        writer.mode = "upsert"
+        writer.columns = ["id", "name", "lastupdatedat"]
+        writer.primary_keys = ["id"]
+        writer.upsert_version_column = "lastupdatedat"
+        values_clause = "(%s, %s, %s), (%s, %s, %s)"
+        sql = writer._build_multirow_sql(values_clause)
+        assert normalize_sql(sql) == normalize_sql(
+            """
+            INSERT INTO test_table AS lakebase_target (id, name, lastupdatedat)
+            VALUES (%s, %s, %s), (%s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                lastupdatedat = EXCLUDED.lastupdatedat
+            WHERE EXCLUDED.lastupdatedat IS NULL
+               OR lakebase_target.lastupdatedat IS NULL
+               OR EXCLUDED.lastupdatedat > lakebase_target.lastupdatedat
+            """
+        )
+
     @patch("psycopg.connect")
     def test_open_success(self, mock_connect, writer):
         mock_conn = Mock()
