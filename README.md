@@ -177,7 +177,30 @@ query = (
 )
 ```
 
-### Example 4: OAuth credential provider
+### Example 4: Multi-row SQL for high-throughput insert/upsert
+
+By default, the writer sends one SQL statement per row via `executemany`. For high-throughput workloads or when the database is under heavy load, set `use_multirow_sql=True` to batch rows into multi-row `INSERT ... VALUES` statements. This reduces the number of SQL statements the database parses and executes by ~100x, lowering server-side overhead and improving end-to-end latencies. Recommended for sustained ingestion rates above 10K events/sec.
+
+```python
+writer = LakebaseForeachWriter(
+    username=LAKEBASE_USER,
+    password=LAKEBASE_PASSWORD,
+    table="public.events",
+    df=streaming_df,
+    lakebase_name=LAKEBASE_NAME,
+    mode="upsert",
+    primary_keys=["id"],
+    batch_size=1000,
+    batch_interval_ms=100,
+    use_multirow_sql=True,
+)
+```
+
+This works with both `insert` and `upsert` modes. The `bulk-insert` mode is unaffected since it already uses PostgreSQL `COPY`.
+
+**Note:** When using `use_multirow_sql=True` with `upsert` mode, duplicate primary keys within a single multi-row statement will cause PostgreSQL to reject it with `ON CONFLICT DO UPDATE command cannot affect row a second time`. This can only happen if the same key arrives twice within the same batch flush — i.e., within the `batch_interval_ms` (default 100ms) or `batch_size` (default 1000 rows) window, whichever triggers first. While this is unlikely in most streaming workloads, if your source can emit multiple updates to the same key within that window, deduplicate upstream and keep only the intended latest row per key before it reaches the writer.
+
+### Example 5: OAuth credential provider
 
 Use `oauth_credential_provider` when you want the Databricks SDK to generate
 fresh Lakebase OAuth database credentials. By default it targets the Lakebase
@@ -208,6 +231,7 @@ writer = LakebaseForeachWriter(
 - `primary_keys`: Required for `upsert`. These columns define the `ON CONFLICT` target.
 - `upsert_version_column`: Optional column used to apply `upsert` updates only when the incoming row is newer than the existing row. When set, updates are applied when the incoming version is greater than the existing version, when the existing version is `NULL`, or when the incoming version is `NULL`.
 - `upsert_coalesce_columns`: Optional list of non-primary-key columns where incoming `NULL` values should preserve the existing table value. Columns not listed here use normal upsert behavior, so incoming `NULL` values overwrite existing values.
+- `use_multirow_sql`: Defaults to `False`. When `True`, the writer sends multi-row `INSERT ... VALUES (...), (...), ...` statements (100 rows per statement) instead of individual statements via `executemany`. Recommended for high-throughput workloads where server-side parse/plan/execute overhead is a bottleneck. Only applies to `insert` and `upsert` modes.
 - `batch_size`: Flush after this many rows.
 - `batch_interval_ms`: Flush after this amount of time even if the batch is not full.
 - `max_queue_size`: In-memory queue size between Spark's `process()` calls and the background flush thread.

@@ -224,6 +224,7 @@ class LakebaseForeachWriter:
         upsert_coalesce_columns: Sequence[str] | str | None = None,
         batch_size: int = 1000,
         batch_interval_ms: int = 100,
+        use_multirow_sql: bool = False,
         max_queue_size: int = 10_000,
         max_retries: int = 3,
         retry_base_delay_s: float = 0.5,
@@ -258,6 +259,8 @@ class LakebaseForeachWriter:
             self.upsert_coalesce_columns = list(upsert_coalesce_columns or [])
         self.batch_size = batch_size
         self.batch_interval_ms = batch_interval_ms
+        self.use_multirow_sql = use_multirow_sql
+        self.rows_per_sql = 100
         self.max_queue_size = max_queue_size
         self.max_retries = max_retries
         self.retry_base_delay_s = retry_base_delay_s
@@ -446,7 +449,30 @@ class LakebaseForeachWriter:
                             copy.write_row(row)
                 else:
                     perf_start = time.time()
-                    cur.executemany(self.sql, self.batch)
+                    if self.use_multirow_sql:
+                        num_cols = len(self.columns)
+                        row_placeholder = "(" + ", ".join(["%s"] * num_cols) + ")"
+                        full_values_clause = ", ".join(
+                            [row_placeholder] * self.rows_per_sql
+                        )
+                        full_sql = self._build_multirow_sql(full_values_clause)
+
+                        for page_start in range(0, len(self.batch), self.rows_per_sql):
+                            page = self.batch[
+                                page_start : page_start + self.rows_per_sql
+                            ]
+                            page_size = len(page)
+
+                            if page_size == self.rows_per_sql:
+                                sql = full_sql
+                            else:
+                                values_clause = ", ".join([row_placeholder] * page_size)
+                                sql = self._build_multirow_sql(values_clause)
+
+                            flat_params = [val for row in page for val in row]
+                            cur.execute(sql, flat_params)
+                    else:
+                        cur.executemany(self.sql, self.batch)
 
             self.conn.commit()
             batch_size = len(self.batch)
@@ -557,6 +583,32 @@ class LakebaseForeachWriter:
 
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
+
+    def _build_multirow_sql(self, values_clause: str) -> str:
+        """Build a multi-row INSERT/UPSERT statement with the given VALUES clause."""
+        cols = ", ".join(self.columns)
+
+        if self.mode == "insert":
+            return f"INSERT INTO {self.table} ({cols}) VALUES {values_clause}"
+
+        elif self.mode == "upsert":
+            if not self.primary_keys:
+                raise ValueError("primary_keys required for upsert mode")
+            pk_cols = ", ".join(self.primary_keys)
+            update_cols = ", ".join(
+                self._build_upsert_assignment(c, "lakebase_target")
+                for c in self.columns
+                if c not in self.primary_keys
+            )
+            version_where = self._build_upsert_version_where("lakebase_target")
+            return (
+                f"INSERT INTO {self.table} AS lakebase_target ({cols}) "
+                f"VALUES {values_clause} "
+                f"ON CONFLICT ({pk_cols}) DO UPDATE SET {update_cols} "
+                f"{version_where}"
+            )
+
+        raise ValueError(f"Invalid mode for multi-row: {self.mode}")
 
     def _validate_upsert_options(self) -> None:
         if self.upsert_version_column is not None:
